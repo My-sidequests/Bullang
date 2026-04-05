@@ -1,0 +1,7 @@
+#rank: skirmish;
+#category: algorithm;
+#export: multiply;
+
+let multiply(a: i16, b: i16) -> result: i16 {
+    (a, b) : a * b -> {result};
+}

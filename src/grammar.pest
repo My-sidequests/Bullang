@@ -1,0 +1,79 @@
+// ── Whitespace & comments ─────────────────────────────────────────────────────
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+
+// ── Primitives ────────────────────────────────────────────────────────────────
+ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+integer = @{ ASCII_DIGIT+ }
+
+// ── Type system (passthrough Rust types) ──────────────────────────────────────
+ty_primitive = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+ty_generic   =  { ty_primitive ~ "<" ~ ty ~ ("," ~ ty)* ~ ">" }
+ty_tuple     =  { "(" ~ ty ~ ("," ~ ty)+ ~ ")" }
+ty_array     =  { "[" ~ ty ~ ";" ~ integer ~ "]" }
+ty           =  { ty_generic | ty_tuple | ty_array | ty_primitive }
+
+// ── Binding name: {name} ──────────────────────────────────────────────────────
+binding = { "{" ~ ident ~ "}" }
+
+// ── Call arguments: ident (param name) or &ident (bullet reference) ───────────
+bullet_ref = { "&" ~ ident }
+call_arg   = { bullet_ref | ident }
+call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
+
+// ── Expression atoms ──────────────────────────────────────────────────────────
+op       = { "+" | "-" | "*" | "/" | "%" }
+atom     = { call | integer | ident }
+expr     = { atom ~ (op ~ atom)* }
+
+// ── Tuple expression: (a, b) used as a value ──────────────────────────────────
+tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
+
+// ── Pipe expression value: tuple or single expr ───────────────────────────────
+pipe_val = { tuple_expr | expr }
+
+// ── Input list: (a, b, c) ─────────────────────────────────────────────────────
+input_list = { "(" ~ ident ~ ("," ~ ident)* ~ ")" }
+
+// ── Single pipe statement: (inputs) : value -> {binding}; ────────────────────
+pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ ";" }
+
+// ── Output declaration in signature: -> name: type ───────────────────────────
+output_decl = { "->" ~ ident ~ ":" ~ ty }
+
+// ── Parameter: name: type ─────────────────────────────────────────────────────
+param      = { ident ~ ":" ~ ty }
+param_list = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
+
+// ── Bullet: let name(params) -> out: type { pipes } ──────────────────────────
+bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ pipe+ ~ "}" }
+
+// ── Directives ────────────────────────────────────────────────────────────────
+rank_val     = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
+category_val = { "algorithm" | "function" }
+
+dir_rank     = { "#rank"     ~ ":" ~ rank_val     ~ ";" }
+dir_category = { "#category" ~ ":" ~ category_val ~ ";" }
+dir_import   = { "#import"   ~ ":" ~ ident        ~ ";" }
+dir_export   = { "#export"   ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
+
+// ── Skirmish file ─────────────────────────────────────────────────────────────
+skirmish_file = {
+    SOI
+    ~ dir_rank
+    ~ dir_category
+    ~ dir_import*
+    ~ dir_export?
+    ~ bullet+
+    ~ EOI
+}
+
+// ── Inventory file ────────────────────────────────────────────────────────────
+inventory_file = {
+    SOI
+    ~ dir_rank
+    ~ dir_export?
+    ~ EOI
+}
+
+file = { skirmish_file | inventory_file }
