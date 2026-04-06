@@ -1,3 +1,17 @@
+// ── Backend ───────────────────────────────────────────────────────────────────
+
+/// The compilation target. Only Rust exists today; others are future backends.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Backend {
+    Rust,
+}
+
+impl Backend {
+    pub fn name(&self) -> &'static str {
+        match self { Backend::Rust => "rust" }
+    }
+}
+
 // ── Rank ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,31 +100,30 @@ impl Category {
 
 #[derive(Debug, Clone)]
 pub enum BuType {
-    /// Any plain Rust type: i16, bool, String, Vec<i16>, etc.
-    Generic(String),
-    /// (T, U, ...) tuple
+    /// Any named Rust type, including generics: i16, Vec<i16>, HashMap<K,V>
+    Named(String),
+    /// (T, U, …) tuple
     Tuple(Vec<BuType>),
-    /// [T; N] array
+    /// [T; N] fixed-size array
     Array(Box<BuType>, usize),
 }
 
 impl BuType {
-    /// Emit the type as a valid Rust type string
+    /// Emit the type as a valid Rust type string.
     pub fn to_rust(&self) -> String {
         match self {
-            BuType::Generic(s)     => s.clone(),
-            BuType::Tuple(inner)   => format!(
+            BuType::Named(s)     => s.clone(),
+            BuType::Tuple(inner) => format!(
                 "({})",
                 inner.iter().map(|t| t.to_rust()).collect::<Vec<_>>().join(", ")
             ),
-            BuType::Array(ty, n)   => format!("[{}; {}]", ty.to_rust(), n),
+            BuType::Array(ty, n) => format!("[{}; {}]", ty.to_rust(), n),
         }
     }
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
-/// A call argument — either a plain ident (value) or &ident (bullet reference)
 #[derive(Debug, Clone)]
 pub enum CallArg {
     Value(String),
@@ -135,18 +148,28 @@ pub struct BinExpr {
 pub enum Expr {
     Atom(Atom),
     BinOp(BinExpr),
-    /// Tuple value: (expr, expr, ...)
     Tuple(Vec<Expr>),
 }
 
 // ── Pipe ──────────────────────────────────────────────────────────────────────
 
-/// (inputs) : expr -> {binding};
 #[derive(Debug, Clone)]
 pub struct Pipe {
     pub inputs:  Vec<String>,
     pub expr:    Expr,
-    pub binding: String,   // the name inside {}
+    pub binding: String,
+}
+
+// ── Bullet body ───────────────────────────────────────────────────────────────
+
+/// A bullet body is either pure Bullang pipes or a native backend block.
+/// The two cannot be mixed — this is enforced at the grammar level.
+#[derive(Debug, Clone)]
+pub enum BulletBody {
+    /// Pure Bullang: a linear chain of named pipe bindings.
+    Pipes(Vec<Pipe>),
+    /// Native escape: verbatim code for the target backend.
+    Native { backend: Backend, code: String },
 }
 
 // ── Output declaration ────────────────────────────────────────────────────────
@@ -172,7 +195,7 @@ pub struct Bullet {
     pub name:     String,
     pub params:   Vec<Param>,
     pub output:   OutputDecl,
-    pub pipes:    Vec<Pipe>,
+    pub body:     BulletBody,
     pub exported: bool,
 }
 
@@ -187,9 +210,12 @@ pub struct SkirmishFile {
     pub bullets:  Vec<Bullet>,
 }
 
+/// An inventory.bu file. Exports are resolved automatically by the build pass
+/// from sibling skirmish files — the file itself only needs #rank.
 #[derive(Debug, Clone)]
 pub struct InventoryFile {
     pub rank:    Rank,
+    /// Resolved by the build pass, not parsed from the file directly.
     pub exports: Vec<String>,
 }
 

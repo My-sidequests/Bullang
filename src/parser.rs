@@ -13,23 +13,16 @@ pub fn parse_file(
 ) -> Result<BuFile, Box<dyn std::error::Error>> {
     use pest::Parser;
 
-    let rule = if is_inventory {
-        Rule::inventory_file
-    } else {
-        Rule::skirmish_file
-    };
-
-    let mut pairs = BulParser::parse(rule, source)?;
-    let file_pair = pairs.next().unwrap();
-
     if is_inventory {
-        Ok(BuFile::Inventory(parse_inventory(file_pair)))
+        let mut pairs = BulParser::parse(Rule::inventory_file, source)?;
+        Ok(BuFile::Inventory(parse_inventory(pairs.next().unwrap())))
     } else {
-        Ok(BuFile::Skirmish(parse_skirmish(file_pair)))
+        let mut pairs = BulParser::parse(Rule::skirmish_file, source)?;
+        Ok(BuFile::Skirmish(parse_skirmish(pairs.next().unwrap())))
     }
 }
 
-// ── File parsers ──────────────────────────────────────────────────────────────
+// ── File-level parsers ────────────────────────────────────────────────────────
 
 fn parse_skirmish(pair: Pair<Rule>) -> SkirmishFile {
     let mut rank     = None;
@@ -60,22 +53,20 @@ fn parse_skirmish(pair: Pair<Rule>) -> SkirmishFile {
                     .map(|p| p.as_str().to_string())
                     .collect();
             }
-            Rule::bullet => {
-                bullets.push(parse_bullet(inner));
-            }
-            Rule::EOI => {}
-            _ => {}
+            Rule::bullet => bullets.push(parse_bullet(inner)),
+            Rule::EOI    => {}
+            _            => {}
         }
     }
 
-    let mut bullets: Vec<Bullet> = bullets.into_iter().map(|mut b| {
-        b.exported = exports.contains(&b.name);
-        b
-    }).collect();
+    let bullets = bullets
+        .into_iter()
+        .map(|mut b| { b.exported = exports.contains(&b.name); b })
+        .collect();
 
     SkirmishFile {
-        rank:     rank.expect("missing #rank"),
-        category: category.expect("missing #category"),
+        rank:     rank.expect("missing #rank directive"),
+        category: category.expect("missing #category directive"),
         imports,
         exports,
         bullets,
@@ -83,8 +74,7 @@ fn parse_skirmish(pair: Pair<Rule>) -> SkirmishFile {
 }
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
-    let mut rank    = None;
-    let mut exports = Vec::new();
+    let mut rank = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -93,34 +83,28 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
                     inner.into_inner().next().unwrap().as_str()
                 );
             }
-            Rule::dir_export => {
-                exports = inner.into_inner()
-                    .map(|p| p.as_str().to_string())
-                    .collect();
-            }
             Rule::EOI => {}
-            _ => {}
+            _         => {}
         }
     }
 
     InventoryFile {
-        rank:    rank.expect("missing #rank"),
-        exports,
+        rank:    rank.expect("missing #rank directive"),
+        exports: Vec::new(), // populated by build pass
     }
 }
 
-// ── Bullet parser ─────────────────────────────────────────────────────────────
+// ── Bullet ────────────────────────────────────────────────────────────────────
 
 fn parse_bullet(pair: Pair<Rule>) -> Bullet {
     let mut inner = pair.into_inner();
+    let name      = inner.next().unwrap().as_str().to_string();
+    let params    = parse_param_list(inner.next().unwrap());
+    let output    = parse_output_decl(inner.next().unwrap());
+    // Next is bullet_body
+    let body      = parse_bullet_body(inner.next().unwrap());
 
-    let name       = inner.next().unwrap().as_str().to_string();
-    let param_list = inner.next().unwrap();
-    let params     = parse_param_list(param_list);
-    let output     = parse_output_decl(inner.next().unwrap());
-    let pipes      = inner.map(parse_pipe).collect();
-
-    Bullet { name, params, output, pipes, exported: false }
+    Bullet { name, params, output, body, exported: false }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {
@@ -144,47 +128,53 @@ fn parse_output_decl(pair: Pair<Rule>) -> OutputDecl {
     }
 }
 
-// ── Type parser ───────────────────────────────────────────────────────────────
+fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
+    // bullet_body = { rust_block | pipe+ }
+    // We iterate all children: if the first is rust_block, that's Native.
+    // Otherwise collect all pipe children.
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
-fn parse_ty(pair: Pair<Rule>) -> BuType {
-    let inner = pair.into_inner().next().unwrap();
-    match inner.as_rule() {
-        Rule::ty_generic => {
-            // Collect the full raw string — it's a valid Rust type already
-            BuType::Generic(inner.as_str().to_string())
+    if children.is_empty() {
+        panic!("bullet body is empty");
+    }
+
+    match children[0].as_rule() {
+        Rule::rust_block => {
+            let code = children[0]
+                .clone()
+                .into_inner()
+                .next()
+                .unwrap()
+                .as_str()
+                .to_string();
+            BulletBody::Native { backend: Backend::Rust, code }
         }
-        Rule::ty_tuple => {
-            let types = inner.into_inner().map(parse_ty).collect();
-            BuType::Tuple(types)
+        Rule::pipe => {
+            let pipes = children.into_iter().map(parse_pipe).collect();
+            BulletBody::Pipes(pipes)
         }
-        Rule::ty_array => {
-            let mut ai  = inner.into_inner();
-            let elem_ty = parse_ty(ai.next().unwrap());
-            let size    = ai.next().unwrap().as_str().parse().unwrap();
-            BuType::Array(Box::new(elem_ty), size)
-        }
-        Rule::ty_primitive => {
-            BuType::Generic(inner.as_str().to_string())
-        }
-        _ => unreachable!(),
+        other => unreachable!("unexpected bullet_body child: {:?}", other),
     }
 }
 
-// ── Pipe parser ───────────────────────────────────────────────────────────────
+// ── Pipe ──────────────────────────────────────────────────────────────────────
 
 fn parse_pipe(pair: Pair<Rule>) -> Pipe {
     let mut inner = pair.into_inner();
 
-    let input_list = inner.next().unwrap();
-    let inputs: Vec<String> = input_list.into_inner()
+    let inputs: Vec<String> = inner
+        .next().unwrap()
+        .into_inner()
         .map(|p| p.as_str().to_string())
         .collect();
 
-    let pipe_val = inner.next().unwrap();
-    let expr     = parse_pipe_val(pipe_val);
-
-    let binding_pair = inner.next().unwrap();
-    let binding = binding_pair.into_inner().next().unwrap().as_str().to_string();
+    let expr    = parse_pipe_val(inner.next().unwrap());
+    let binding = inner
+        .next().unwrap()
+        .into_inner()
+        .next().unwrap()
+        .as_str()
+        .to_string();
 
     Pipe { inputs, expr, binding }
 }
@@ -197,20 +187,21 @@ fn parse_pipe_val(pair: Pair<Rule>) -> Expr {
             Expr::Tuple(exprs)
         }
         Rule::expr => parse_expr(inner),
-        _          => unreachable!(),
+        other => unreachable!("unexpected pipe_val: {:?}", other),
     }
 }
 
 fn parse_expr(pair: Pair<Rule>) -> Expr {
     let mut inner = pair.into_inner();
-    let lhs_atom  = parse_atom(inner.next().unwrap());
+    let lhs       = parse_atom(inner.next().unwrap());
 
-    if let Some(op_pair) = inner.next() {
-        let op       = op_pair.as_str().trim().to_string();
-        let rhs_atom = parse_atom(inner.next().unwrap());
-        Expr::BinOp(BinExpr { lhs: lhs_atom, op, rhs: rhs_atom })
-    } else {
-        Expr::Atom(lhs_atom)
+    match inner.next() {
+        Some(op_pair) => {
+            let op  = op_pair.as_str().trim().to_string();
+            let rhs = parse_atom(inner.next().unwrap());
+            Expr::BinOp(BinExpr { lhs, op, rhs })
+        }
+        None => Expr::Atom(lhs),
     }
 }
 
@@ -218,14 +209,14 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::call => {
-            let mut ci   = inner.into_inner();
-            let name     = ci.next().unwrap().as_str().to_string();
-            let args     = ci.map(parse_call_arg).collect();
+            let mut ci = inner.into_inner();
+            let name   = ci.next().unwrap().as_str().to_string();
+            let args   = ci.map(parse_call_arg).collect();
             Atom::Call { name, args }
         }
         Rule::integer => Atom::Integer(inner.as_str().parse().unwrap()),
         Rule::ident   => Atom::Ident(inner.as_str().to_string()),
-        _             => unreachable!(),
+        other => unreachable!("unexpected atom: {:?}", other),
     }
 }
 
@@ -236,7 +227,32 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
             let name = inner.into_inner().next().unwrap().as_str().to_string();
             CallArg::BulletRef(name)
         }
-        Rule::ident => CallArg::Value(inner.as_str().to_string()),
-        _           => unreachable!(),
+        Rule::integer => CallArg::Value(inner.as_str().to_string()),
+        Rule::ident   => CallArg::Value(inner.as_str().to_string()),
+        other => unreachable!("unexpected call_arg: {:?}", other),
+    }
+}
+
+// ── Type ──────────────────────────────────────────────────────────────────────
+
+fn parse_ty(pair: Pair<Rule>) -> BuType {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::ty_tuple => {
+            let types = inner.into_inner().map(parse_ty).collect();
+            BuType::Tuple(types)
+        }
+        Rule::ty_array => {
+            let mut ai      = inner.into_inner();
+            let elem        = parse_ty(ai.next().unwrap());
+            let size: usize = ai.next().unwrap().as_str().parse().unwrap();
+            BuType::Array(Box::new(elem), size)
+        }
+        Rule::ty_fn   => {
+            // Capture fn(...)->T verbatim as a Named type string
+            BuType::Named(inner.as_str().to_string())
+        }
+        Rule::ty_atom => BuType::Named(inner.as_str().to_string()),
+        other => unreachable!("unexpected ty rule: {:?}", other),
     }
 }
