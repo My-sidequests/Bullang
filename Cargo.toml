@@ -8,6 +8,6 @@ name = "bullang"
 path = "src/main.rs"
 
 [dependencies]
-pest = "2.7"
-pest_derive = "2.7"
-clap = { version = "4", features = ["derive"] }
+pest        = "=2.7.14"
+pest_derive = "=2.7.14"
+clap        = { version = "=4.4.18", features = ["derive"] }
