@@ -1,19 +1,35 @@
+//! Bullang compiler entry point.
+//!
+//! Usage (run from inside the war root directory):
+//!
+//!   bullang build -name my_program -ext rs
+//!   bullang build -name my_program -ext rs -out /path/to/output
+//!   bullang check
+//!   bullang file path/to/file.bu
+//!
+//! Future: `bullang build` will be runnable from anywhere (like tsc),
+//! walking up the directory tree to find the war root automatically.
+
 mod ast;
 mod build;
 mod codegen;
 mod parser;
+mod typecheck;
 mod validator;
 
 use clap::{Parser as ClapParser, Subcommand};
 use std::path::PathBuf;
+use crate::ast::Backend;
+
+// ── CLI definition ────────────────────────────────────────────────────────────
 
 #[derive(ClapParser)]
 #[command(
     name    = "bullang",
     version = "0.1.0",
-    about   = "Bullang (.bu) -> Rust transpiler\n\n\
-               The war tree is read-only. All output lands in --out.\n\
-               Source and output are always completely separate."
+    about   = "Bullang (.bu) transpiler\n\n\
+               Run from inside the war root directory.\n\
+               The source tree is never modified — all output is external."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -22,36 +38,159 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Transpile a single .bu file to stdout (or --output file)
+    /// Validate and type-check the war tree, then transpile it into a project.
+    /// Run from inside the war root directory.
+    Build {
+        /// Name for the output project (becomes the folder name and crate name)
+        #[arg(long)]
+        name: String,
+
+        /// Target language extension: 'rs' for Rust (more backends coming)
+        #[arg(short = 'e', long)]
+        ext: String,
+
+        /// Output directory (default: ../\<name\>, a sibling of the war root)
+        #[arg(short = 'o', long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Validate and type-check the war tree without emitting any code.
+    /// Run from inside the war root directory.
+    Check,
+
+    /// Transpile a single .bu file to stdout (or --output).
+    /// Useful for quick inspection — no cross-file type checking.
     File {
-        /// Path to the .bu source file
         input: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// Validate a war tree without emitting any code
-    Check {
-        /// Path to the war root directory (must contain inventory.bu with #rank: war)
-        root: PathBuf,
-    },
-
-    /// Validate and transpile a full war tree into a standalone Rust crate
-    Build {
-        /// Path to the war root directory (must contain inventory.bu with #rank: war)
-        root: PathBuf,
-        /// Output directory for the generated Rust crate
-        #[arg(short, long, default_value = "bullang-out")]
-        out: PathBuf,
-    },
 }
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::File { input, output }  => cmd_file(input, output),
-        Command::Check { root }          => cmd_check(root),
-        Command::Build { root, out }     => cmd_build(root, out),
+        Command::Build { name, ext, out } => cmd_build(name, ext, out),
+        Command::Check                    => cmd_check(),
+        Command::File { input, output }   => cmd_file(input, output),
+    }
+}
+
+// ── build ─────────────────────────────────────────────────────────────────────
+
+fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
+    // Resolve backend from extension
+    let backend = Backend::from_ext(&ext).unwrap_or_else(|| {
+        eprintln!(
+            "error: unknown extension '{}' — supported: rs",
+            ext
+        );
+        std::process::exit(1);
+    });
+
+    // War root = current working directory
+    let war_root = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("error: could not determine current directory: {}", e);
+        std::process::exit(1);
+    });
+
+    guard_war_root(&war_root);
+
+    // Output directory: --out if given, otherwise ../name (sibling of war root)
+    let out_dir = match out {
+        Some(p) => p,
+        None => war_root
+            .parent()
+            .unwrap_or(&war_root)
+            .join(&name),
+    };
+
+    // Refuse to write inside the source tree
+    if out_dir.starts_with(&war_root) {
+        eprintln!(
+            "error: output '{}' must be outside the war source tree '{}'",
+            out_dir.display(), war_root.display()
+        );
+        std::process::exit(1);
+    }
+
+    println!("bullang build");
+    println!("  source  : {}", war_root.display());
+    println!("  output  : {}", out_dir.display());
+    println!("  name    : {}", name);
+    println!("  backend : {}", backend.name());
+    println!();
+
+    // Phase 1: structural validation
+    let errors = validator::validate_tree(&war_root);
+    if !errors.is_empty() {
+        for e in &errors { eprintln!("error: {}", e); }
+        eprintln!("\n{} structural error(s) — build aborted", errors.len());
+        std::process::exit(1);
+    }
+    println!("structural validation ... ok");
+
+    // Phase 2: type checking
+    let type_errors = typecheck::typecheck_tree(&war_root);
+    if !type_errors.is_empty() {
+        for e in &type_errors { eprintln!("type error: {}", e); }
+        eprintln!("\n{} type error(s) — build aborted", type_errors.len());
+        std::process::exit(1);
+    }
+    println!("type checking         ... ok");
+
+    // Phase 3: code generation
+    let result = build::build(&war_root, &out_dir, &name, &backend);
+    for e in &result.errors { eprintln!("error: {}", e); }
+    if !result.errors.is_empty() {
+        eprintln!("\nbuild failed -- {} error(s)", result.errors.len());
+        std::process::exit(1);
+    }
+
+    println!("code generation       ... ok");
+    println!();
+    println!("wrote {} file(s) to {}", result.files_written, out_dir.display());
+    println!();
+
+    // Backend-specific next-step hint
+    match backend {
+        Backend::Rust => {
+            println!("to compile:");
+            println!("  cd {} && cargo build", out_dir.display());
+        }
+    }
+}
+
+// ── check ─────────────────────────────────────────────────────────────────────
+
+fn cmd_check() {
+    let war_root = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("error: could not determine current directory: {}", e);
+        std::process::exit(1);
+    });
+
+    guard_war_root(&war_root);
+
+    // Phase 1: structural validation
+    let errors = validator::validate_tree(&war_root);
+    if !errors.is_empty() {
+        for e in &errors { eprintln!("error: {}", e); }
+        eprintln!("\n{} structural error(s) — fix before type checking",
+            errors.len());
+        std::process::exit(1);
+    }
+
+    // Phase 2: type checking
+    let type_errors = typecheck::typecheck_tree(&war_root);
+    if type_errors.is_empty() {
+        println!("ok -- {} validated and type-checked with no errors",
+            war_root.display());
+    } else {
+        for e in &type_errors { eprintln!("type error: {}", e); }
+        eprintln!("\n{} type error(s) found", type_errors.len());
+        std::process::exit(1);
     }
 }
 
@@ -73,83 +212,41 @@ fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
 
     match bu {
         ast::BuFile::Skirmish(ref sk) => {
-            // Single-file mode: no cross-file inventory context available.
-            // Internal bullet rules are still validated.
             use std::collections::HashSet;
+
             let errors = validator::validate_bu_file_direct(
                 sk,
                 &input.display().to_string(),
                 &HashSet::new(),
                 &ast::Rank::Skirmish,
             );
-            abort_on_errors(&errors);
+            if !errors.is_empty() {
+                for e in &errors { eprintln!("error: {}", e); }
+                std::process::exit(1);
+            }
+
+            let type_errors = typecheck::typecheck_file(
+                sk,
+                &input.display().to_string(),
+            );
+            if !type_errors.is_empty() {
+                for e in &type_errors { eprintln!("type error: {}", e); }
+                std::process::exit(1);
+            }
+
             write_or_print(codegen::emit_skirmish(sk), output);
         }
         ast::BuFile::Inventory(_) => {
-            // Inventory in single-file mode — emit an empty mod stub
             write_or_print(codegen::emit_mod_rs(&[], &[]), output);
         }
     }
 }
 
-// ── check ─────────────────────────────────────────────────────────────────────
+// ── War root guard ────────────────────────────────────────────────────────────
 
-fn cmd_check(root: PathBuf) {
-    guard_war_root(&root);
-    let errors = validator::validate_tree(&root);
-    if errors.is_empty() {
-        println!("ok -- {} validated with no errors", root.display());
-    } else {
-        for e in &errors { eprintln!("error: {}", e); }
-        eprintln!("\n{} error(s) found", errors.len());
-        std::process::exit(1);
-    }
-}
-
-// ── build ─────────────────────────────────────────────────────────────────────
-
-fn cmd_build(root: PathBuf, out: PathBuf) {
-    guard_war_root(&root);
-
-    // Refuse to write output inside the source tree
-    if out.starts_with(&root) || root.starts_with(&out) {
-        eprintln!(
-            "error: output directory '{}' must be completely outside \
-             the war source tree '{}'",
-            out.display(), root.display()
-        );
-        std::process::exit(1);
-    }
-
-    println!("bullang build");
-    println!("  source : {}", root.display());
-    println!("  output : {}", out.display());
-    println!();
-
-    let result = build::build(&root, &out);
-
-    for e in &result.errors {
-        eprintln!("error: {}", e);
-    }
-
-    if !result.errors.is_empty() {
-        eprintln!("\nbuild failed -- {} error(s)", result.errors.len());
-        std::process::exit(1);
-    }
-
-    println!(
-        "ok -- {} file(s) written to {}",
-        result.files_written,
-        out.display()
-    );
-    println!();
-    println!("to compile the generated crate:");
-    println!("  cd {} && cargo build", out.display());
-}
-
-// ── guards ────────────────────────────────────────────────────────────────────
-
-/// Verify the given path is a valid war root (has inventory.bu with #rank: war).
+/// Verify the given path is a valid war root.
+/// TODO (global invocation): walk up from cwd to find the war root
+/// automatically, like tsc walks up to find tsconfig.json.
 fn guard_war_root(root: &PathBuf) {
     if !root.is_dir() {
         eprintln!("error: '{}' is not a directory", root.display());
@@ -159,7 +256,8 @@ fn guard_war_root(root: &PathBuf) {
     let inv = root.join("inventory.bu");
     if !inv.exists() {
         eprintln!(
-            "error: '{}' has no inventory.bu — is this a war root?",
+            "error: no inventory.bu found in '{}'\n\
+             run bullang from inside the war root directory",
             root.display()
         );
         std::process::exit(1);
@@ -169,7 +267,8 @@ fn guard_war_root(root: &PathBuf) {
         Some(ast::Rank::War) => {}
         Some(other) => {
             eprintln!(
-                "error: '{}' inventory.bu declares #rank: {} — expected #rank: war",
+                "error: '{}' declares #rank: {} — expected #rank: war\n\
+                 run bullang from inside the war root directory",
                 root.display(), other.name()
             );
             std::process::exit(1);
@@ -184,7 +283,7 @@ fn guard_war_root(root: &PathBuf) {
     }
 }
 
-// ── utilities ─────────────────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
 fn read_file(path: &PathBuf) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -200,12 +299,5 @@ fn write_or_print(content: String, output: Option<PathBuf>) {
             std::process::exit(1);
         }),
         None => print!("{}", content),
-    }
-}
-
-fn abort_on_errors(errors: &[validator::ValidationError]) {
-    if !errors.is_empty() {
-        for e in errors { eprintln!("error: {}", e); }
-        std::process::exit(1);
     }
 }

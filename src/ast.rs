@@ -1,14 +1,58 @@
+use std::collections::HashMap;
+
+// ── Source location ───────────────────────────────────────────────────────────
+
+/// Line/column position in a source file (1-indexed, matching Pest output).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub line: usize,
+    pub col:  usize,
+}
+
+impl Span {
+    pub fn new(line: usize, col: usize) -> Self {
+        Self { line, col }
+    }
+
+    pub fn unknown() -> Self {
+        Self { line: 0, col: 0 }
+    }
+
+    pub fn is_known(&self) -> bool {
+        self.line > 0
+    }
+
+    /// Format as "line:col" for error messages.
+    pub fn display(&self) -> String {
+        if self.is_known() {
+            format!("{}:{}", self.line, self.col)
+        } else {
+            String::new()
+        }
+    }
+}
+
 // ── Backend ───────────────────────────────────────────────────────────────────
 
-/// The compilation target. Only Rust exists today; others are future backends.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Backend {
     Rust,
 }
 
 impl Backend {
+    pub fn from_ext(ext: &str) -> Option<Self> {
+        match ext {
+            "rs" => Some(Backend::Rust),
+            _    => None,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self { Backend::Rust => "rust" }
+    }
+
+    pub fn ext(&self) -> &'static str {
+        match self { Backend::Rust => "rs" }
     }
 }
 
@@ -34,17 +78,6 @@ impl Rank {
             "tactic"   => Some(Rank::Tactic),
             "skirmish" => Some(Rank::Skirmish),
             _          => None,
-        }
-    }
-
-    pub fn expected_depth(&self) -> usize {
-        match self {
-            Rank::War      => 0,
-            Rank::Theater  => 1,
-            Rank::Battle   => 2,
-            Rank::Strategy => 3,
-            Rank::Tactic   => 4,
-            Rank::Skirmish => 5,
         }
     }
 
@@ -98,18 +131,20 @@ impl Category {
 
 // ── Type system ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BuType {
-    /// Any named Rust type, including generics: i16, Vec<i16>, HashMap<K,V>
+    /// Any named Rust type: i16, Vec<i16>, HashMap<K,V>, fn(T)->U …
     Named(String),
     /// (T, U, …) tuple
     Tuple(Vec<BuType>),
     /// [T; N] fixed-size array
     Array(Box<BuType>, usize),
+    /// Unknown — used as a placeholder when inference cannot determine a type.
+    /// Propagates silently; a later pass may report errors.
+    Unknown,
 }
 
 impl BuType {
-    /// Emit the type as a valid Rust type string.
     pub fn to_rust(&self) -> String {
         match self {
             BuType::Named(s)     => s.clone(),
@@ -118,9 +153,35 @@ impl BuType {
                 inner.iter().map(|t| t.to_rust()).collect::<Vec<_>>().join(", ")
             ),
             BuType::Array(ty, n) => format!("[{}; {}]", ty.to_rust(), n),
+            BuType::Unknown      => "_".to_string(),
+        }
+    }
+
+    /// True if this type is a numeric primitive.
+    pub fn is_numeric(&self) -> bool {
+        match self {
+            BuType::Named(s) => matches!(
+                s.as_str(),
+                "i8"  | "i16" | "i32" | "i64" | "i128" | "isize" |
+                "u8"  | "u16" | "u32" | "u64" | "u128" | "usize" |
+                "f32" | "f64"
+            ),
+            _ => false,
         }
     }
 }
+
+// ── Type environment ──────────────────────────────────────────────────────────
+
+/// The resolved signature of a bullet.
+#[derive(Debug, Clone)]
+pub struct BulletSig {
+    pub params:  Vec<BuType>,
+    pub returns: BuType,
+}
+
+/// Maps bullet name → resolved signature. Built bottom-up during validation.
+pub type TypeEnv = HashMap<String, BulletSig>;
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
@@ -158,17 +219,14 @@ pub struct Pipe {
     pub inputs:  Vec<String>,
     pub expr:    Expr,
     pub binding: String,
+    pub span:    Span,      // position of the pipe statement in source
 }
 
 // ── Bullet body ───────────────────────────────────────────────────────────────
 
-/// A bullet body is either pure Bullang pipes or a native backend block.
-/// The two cannot be mixed — this is enforced at the grammar level.
 #[derive(Debug, Clone)]
 pub enum BulletBody {
-    /// Pure Bullang: a linear chain of named pipe bindings.
     Pipes(Vec<Pipe>),
-    /// Native escape: verbatim code for the target backend.
     Native { backend: Backend, code: String },
 }
 
@@ -197,6 +255,7 @@ pub struct Bullet {
     pub output:   OutputDecl,
     pub body:     BulletBody,
     pub exported: bool,
+    pub span:     Span,     // position of the `let` keyword in source
 }
 
 // ── File types ────────────────────────────────────────────────────────────────
@@ -210,12 +269,9 @@ pub struct SkirmishFile {
     pub bullets:  Vec<Bullet>,
 }
 
-/// An inventory.bu file. Exports are resolved automatically by the build pass
-/// from sibling skirmish files — the file itself only needs #rank.
 #[derive(Debug, Clone)]
 pub struct InventoryFile {
     pub rank:    Rank,
-    /// Resolved by the build pass, not parsed from the file directly.
     pub exports: Vec<String>,
 }
 

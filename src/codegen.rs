@@ -1,3 +1,6 @@
+//! Code generation — AST → target language source.
+//! Currently only the Rust backend is implemented.
+
 use crate::ast::*;
 
 // ── Skirmish file → Rust source ───────────────────────────────────────────────
@@ -5,8 +8,8 @@ use crate::ast::*;
 pub fn emit_skirmish(file: &SkirmishFile) -> String {
     let mut out = String::new();
 
-    // Every generated .rs file pulls in the full crate re-export surface.
-    // Called bullets from any rank are resolved through the lib.rs glob chain.
+    // Pull the full crate export surface into scope so calls to lower-rank
+    // bullets resolve without explicit path qualification.
     out.push_str("#[allow(unused_imports)]\n");
     out.push_str("use crate::*;\n\n");
 
@@ -20,10 +23,7 @@ pub fn emit_skirmish(file: &SkirmishFile) -> String {
 
 // ── Inventory → mod.rs ────────────────────────────────────────────────────────
 
-/// Emits a mod.rs for a folder level.
-/// Declares all child modules then re-exports everything from each via glob.
-/// Each child module carries its own `pub` declarations — a single glob per
-/// child surfaces the entire export surface cleanly without enumerating names.
+/// Emits a mod.rs: declares child modules and re-exports their full surfaces.
 pub fn emit_mod_rs(child_modules: &[String], _exports: &[String]) -> String {
     let mut out = String::new();
 
@@ -41,7 +41,7 @@ pub fn emit_mod_rs(child_modules: &[String], _exports: &[String]) -> String {
     out
 }
 
-/// Emits lib.rs for the war root — same pattern as mod.rs.
+/// Emits lib.rs — the crate root, same pattern as mod.rs.
 pub fn emit_lib_rs(child_modules: &[String], _exports: &[String]) -> String {
     let mut out = String::new();
 
@@ -61,7 +61,7 @@ pub fn emit_lib_rs(child_modules: &[String], _exports: &[String]) -> String {
     out
 }
 
-/// Emits the Cargo.toml for the generated crate.
+/// Emits Cargo.toml for the generated crate.
 pub fn emit_cargo_toml(crate_name: &str) -> String {
     format!(
         "[package]\nname    = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
@@ -86,9 +86,7 @@ fn emit_bullet(bullet: &Bullet, category: &Category) -> String {
     ));
 
     match &bullet.body {
-        BulletBody::Pipes(pipes) => {
-            emit_pipes(&mut out, pipes);
-        }
+        BulletBody::Pipes(pipes) => emit_pipes(&mut out, pipes),
         BulletBody::Native { code, .. } => {
             for line in code.lines() {
                 if line.trim().is_empty() {
@@ -124,7 +122,7 @@ fn emit_params(params: &[Param]) -> String {
         .join(", ")
 }
 
-// ── Expressions ───────────────────────────────────────────────────────────────
+// ── Expression emitters ───────────────────────────────────────────────────────
 
 fn emit_expr(expr: &Expr) -> String {
     match expr {

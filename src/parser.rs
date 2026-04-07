@@ -22,6 +22,13 @@ pub fn parse_file(
     }
 }
 
+// ── Span extraction ───────────────────────────────────────────────────────────
+
+fn span_of(pair: &Pair<Rule>) -> Span {
+    let (line, col) = pair.as_span().start_pos().line_col();
+    Span::new(line, col)
+}
+
 // ── File-level parsers ────────────────────────────────────────────────────────
 
 fn parse_skirmish(pair: Pair<Rule>) -> SkirmishFile {
@@ -90,21 +97,21 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
 
     InventoryFile {
         rank:    rank.expect("missing #rank directive"),
-        exports: Vec::new(), // populated by build pass
+        exports: Vec::new(),
     }
 }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 
 fn parse_bullet(pair: Pair<Rule>) -> Bullet {
-    let mut inner = pair.into_inner();
-    let name      = inner.next().unwrap().as_str().to_string();
-    let params    = parse_param_list(inner.next().unwrap());
-    let output    = parse_output_decl(inner.next().unwrap());
-    // Next is bullet_body
-    let body      = parse_bullet_body(inner.next().unwrap());
+    let bullet_span = span_of(&pair);
+    let mut inner   = pair.into_inner();
+    let name        = inner.next().unwrap().as_str().to_string();
+    let params      = parse_param_list(inner.next().unwrap());
+    let output      = parse_output_decl(inner.next().unwrap());
+    let body        = parse_bullet_body(inner.next().unwrap());
 
-    Bullet { name, params, output, body, exported: false }
+    Bullet { name, params, output, body, exported: false, span: bullet_span }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {
@@ -129,9 +136,6 @@ fn parse_output_decl(pair: Pair<Rule>) -> OutputDecl {
 }
 
 fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
-    // bullet_body = { rust_block | pipe+ }
-    // We iterate all children: if the first is rust_block, that's Native.
-    // Otherwise collect all pipe children.
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     if children.is_empty() {
@@ -160,6 +164,7 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
 // ── Pipe ──────────────────────────────────────────────────────────────────────
 
 fn parse_pipe(pair: Pair<Rule>) -> Pipe {
+    let pipe_span = span_of(&pair);
     let mut inner = pair.into_inner();
 
     let inputs: Vec<String> = inner
@@ -176,7 +181,7 @@ fn parse_pipe(pair: Pair<Rule>) -> Pipe {
         .as_str()
         .to_string();
 
-    Pipe { inputs, expr, binding }
+    Pipe { inputs, expr, binding, span: pipe_span }
 }
 
 fn parse_pipe_val(pair: Pair<Rule>) -> Expr {
@@ -248,11 +253,8 @@ fn parse_ty(pair: Pair<Rule>) -> BuType {
             let size: usize = ai.next().unwrap().as_str().parse().unwrap();
             BuType::Array(Box::new(elem), size)
         }
-        Rule::ty_fn   => {
-            // Capture fn(...)->T verbatim as a Named type string
-            BuType::Named(inner.as_str().to_string())
-        }
-        Rule::ty_atom => BuType::Named(inner.as_str().to_string()),
+        Rule::ty_fn   => BuType::Named(inner.as_str().trim().to_string()),
+        Rule::ty_atom => BuType::Named(inner.as_str().trim().to_string()),
         other => unreachable!("unexpected ty rule: {:?}", other),
     }
 }
