@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 // ── Source location ───────────────────────────────────────────────────────────
 
-/// Line/column position in a source file (1-indexed, matching Pest output).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
     pub line: usize,
@@ -10,26 +9,9 @@ pub struct Span {
 }
 
 impl Span {
-    pub fn new(line: usize, col: usize) -> Self {
-        Self { line, col }
-    }
-
-    pub fn unknown() -> Self {
-        Self { line: 0, col: 0 }
-    }
-
-    pub fn is_known(&self) -> bool {
-        self.line > 0
-    }
-
-    /// Format as "line:col" for error messages.
-    pub fn display(&self) -> String {
-        if self.is_known() {
-            format!("{}:{}", self.line, self.col)
-        } else {
-            String::new()
-        }
-    }
+    pub fn new(line: usize, col: usize) -> Self { Self { line, col } }
+    pub fn unknown() -> Self { Self { line: 0, col: 0 } }
+    pub fn is_known(&self) -> bool { self.line > 0 }
 }
 
 // ── Backend ───────────────────────────────────────────────────────────────────
@@ -41,31 +23,22 @@ pub enum Backend {
 
 impl Backend {
     pub fn from_ext(ext: &str) -> Option<Self> {
-        match ext {
-            "rs" => Some(Backend::Rust),
-            _    => None,
-        }
+        match ext { "rs" => Some(Backend::Rust), _ => None }
     }
-
-    pub fn name(&self) -> &'static str {
-        match self { Backend::Rust => "rust" }
-    }
-
-    pub fn ext(&self) -> &'static str {
-        match self { Backend::Rust => "rs" }
-    }
+    pub fn name(&self) -> &'static str { match self { Backend::Rust => "rust" } }
+    pub fn ext(&self)  -> &'static str { match self { Backend::Rust => "rs"   } }
 }
 
 // ── Rank ──────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
-    War,
-    Theater,
-    Battle,
-    Strategy,
+    Skirmish,   // lowest
     Tactic,
-    Skirmish,
+    Strategy,
+    Battle,
+    Theater,
+    War,        // highest
 }
 
 impl Rank {
@@ -81,6 +54,7 @@ impl Rank {
         }
     }
 
+    /// The rank of immediate child folders.
     pub fn child_rank(&self) -> Option<Rank> {
         match self {
             Rank::War      => Some(Rank::Theater),
@@ -102,6 +76,16 @@ impl Rank {
             Rank::Skirmish => "skirmish",
         }
     }
+
+    /// True if this rank can contain .bu files of its own rank.
+    pub fn has_own_files(&self) -> bool {
+        *self != Rank::War
+    }
+
+    /// True if this rank can contain sub-folders.
+    pub fn has_sub_folders(&self) -> bool {
+        *self != Rank::Skirmish
+    }
 }
 
 // ── Category ──────────────────────────────────────────────────────────────────
@@ -120,7 +104,6 @@ impl Category {
             _           => None,
         }
     }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Category::Algorithm => "algorithm",
@@ -133,14 +116,10 @@ impl Category {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BuType {
-    /// Any named Rust type: i16, Vec<i16>, HashMap<K,V>, fn(T)->U …
     Named(String),
-    /// (T, U, …) tuple
     Tuple(Vec<BuType>),
-    /// [T; N] fixed-size array
     Array(Box<BuType>, usize),
-    /// Unknown — used as a placeholder when inference cannot determine a type.
-    /// Propagates silently; a later pass may report errors.
+    /// Placeholder when inference cannot determine a type — propagates silently.
     Unknown,
 }
 
@@ -157,14 +136,13 @@ impl BuType {
         }
     }
 
-    /// True if this type is a numeric primitive.
     pub fn is_numeric(&self) -> bool {
         match self {
             BuType::Named(s) => matches!(
                 s.as_str(),
-                "i8"  | "i16" | "i32" | "i64" | "i128" | "isize" |
-                "u8"  | "u16" | "u32" | "u64" | "u128" | "usize" |
-                "f32" | "f64"
+                "i8"|"i16"|"i32"|"i64"|"i128"|"isize"|
+                "u8"|"u16"|"u32"|"u64"|"u128"|"usize"|
+                "f32"|"f64"
             ),
             _ => false,
         }
@@ -173,14 +151,12 @@ impl BuType {
 
 // ── Type environment ──────────────────────────────────────────────────────────
 
-/// The resolved signature of a bullet.
 #[derive(Debug, Clone)]
 pub struct BulletSig {
     pub params:  Vec<BuType>,
     pub returns: BuType,
 }
 
-/// Maps bullet name → resolved signature. Built bottom-up during validation.
 pub type TypeEnv = HashMap<String, BulletSig>;
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -219,7 +195,7 @@ pub struct Pipe {
     pub inputs:  Vec<String>,
     pub expr:    Expr,
     pub binding: String,
-    pub span:    Span,      // position of the pipe statement in source
+    pub span:    Span,
 }
 
 // ── Bullet body ───────────────────────────────────────────────────────────────
@@ -255,7 +231,7 @@ pub struct Bullet {
     pub output:   OutputDecl,
     pub body:     BulletBody,
     pub exported: bool,
-    pub span:     Span,     // position of the `let` keyword in source
+    pub span:     Span,
 }
 
 // ── File types ────────────────────────────────────────────────────────────────

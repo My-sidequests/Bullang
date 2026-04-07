@@ -1,7 +1,7 @@
 //! Compile-time structural validation for the Bullang hierarchy.
 //!
-//! Runs bottom-up: skirmish folders first, then tactic, up to war.
-//! Produces ValidationError values that include file path and line:col.
+//! Works with any rank as root — war, theater, tactic, skirmish, etc.
+//! Runs bottom-up: deepest folders first, errors bubble upward.
 
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ use crate::parser;
 #[derive(Debug)]
 pub struct ValidationError {
     pub file:    String,
-    pub line:    usize,   // 0 = unknown
+    pub line:    usize,
     pub col:     usize,
     pub message: String,
 }
@@ -29,39 +29,23 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-// ── Error constructors ────────────────────────────────────────────────────────
-
-fn err(path: &Path, message: impl Into<String>) -> ValidationError {
-    ValidationError {
-        file:    path.display().to_string(),
-        line:    0,
-        col:     0,
-        message: message.into(),
-    }
+fn err(path: &Path, msg: impl Into<String>) -> ValidationError {
+    ValidationError { file: path.display().to_string(), line: 0, col: 0, message: msg.into() }
 }
 
-fn serr(file: &str, span: Span, message: impl Into<String>) -> ValidationError {
-    ValidationError {
-        file:    file.to_string(),
-        line:    span.line,
-        col:     span.col,
-        message: message.into(),
-    }
+fn serr(file: &str, span: Span, msg: impl Into<String>) -> ValidationError {
+    ValidationError { file: file.to_string(), line: span.line, col: span.col, message: msg.into() }
 }
 
-fn ferr(file: &str, message: impl Into<String>) -> ValidationError {
-    ValidationError {
-        file:    file.to_string(),
-        line:    0,
-        col:     0,
-        message: message.into(),
-    }
+fn ferr(file: &str, msg: impl Into<String>) -> ValidationError {
+    ValidationError { file: file.to_string(), line: 0, col: 0, message: msg.into() }
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn validate_tree(war_root: &Path) -> Vec<ValidationError> {
-    validate_folder(war_root)
+/// Validate a Bullang root of any rank.
+pub fn validate_tree(root: &Path) -> Vec<ValidationError> {
+    validate_folder(root)
 }
 
 // ── Folder validation (recursive, bottom-up) ──────────────────────────────────
@@ -72,8 +56,7 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
     let rank = match read_folder_rank(dir) {
         Some(r) => r,
         None => {
-            errors.push(err(dir,
-                "folder has no inventory.bu or inventory.bu is missing #rank"));
+            errors.push(err(dir, "folder has no inventory.bu or inventory.bu is missing #rank"));
             return errors;
         }
     };
@@ -86,83 +69,77 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
         errors.extend(validate_folder(subdir));
     }
 
-    match rank {
-        // War: only sub-folders, no .bu files
-        Rank::War => {
-            if !bu_files.is_empty() {
-                errors.push(err(dir, format!(
-                    "war folder may not contain .bu files (found {}); \
-                     only theater sub-folders are allowed",
-                    bu_files.len()
-                )));
-            }
-            if subdirs.len() > 5 {
-                errors.push(err(dir, format!(
-                    "war folder may contain at most 5 theater folders, found {}",
-                    subdirs.len()
-                )));
-            }
-            for subdir in &subdirs {
-                validate_child_rank(subdir, &Rank::Theater, &mut errors);
-            }
+    // ── War: no .bu files, only theater sub-folders ───────────────────────────
+    if rank == Rank::War {
+        if !bu_files.is_empty() {
+            errors.push(err(dir, format!(
+                "war folder may not contain .bu files (found {}); \
+                 only theater sub-folders are allowed",
+                bu_files.len()
+            )));
         }
-
-        // Skirmish: only .bu files, no sub-folders
-        Rank::Skirmish => {
-            if !subdirs.is_empty() {
-                errors.push(err(dir, format!(
-                    "skirmish folder may not contain sub-folders (found {}); \
-                     only .bu files are allowed",
-                    subdirs.len()
-                )));
-            }
-            if bu_files.len() > 5 {
-                errors.push(err(dir, format!(
-                    "skirmish folder may contain at most 5 .bu files, found {}",
-                    bu_files.len()
-                )));
-            }
-            for bu in &bu_files {
-                errors.extend(validate_bu_file(bu, &rank, &HashSet::new()));
-            }
+        if subdirs.len() > 5 {
+            errors.push(err(dir, format!(
+                "war folder may contain at most 5 theater folders, found {}",
+                subdirs.len()
+            )));
         }
-
-        // All other ranks: up to 5 sub-folders + up to 5 .bu files
-        ref r => {
-            let child_rank = r.child_rank().unwrap();
-
-            if subdirs.len() > 5 {
-                errors.push(err(dir, format!(
-                    "{} folder may contain at most 5 {} sub-folders, found {}",
-                    r.name(), child_rank.name(), subdirs.len()
-                )));
-            }
-            if bu_files.len() > 5 {
-                errors.push(err(dir, format!(
-                    "{} folder may contain at most 5 .bu files, found {}",
-                    r.name(), bu_files.len()
-                )));
-            }
-            for subdir in &subdirs {
-                validate_child_rank(subdir, &child_rank, &mut errors);
-            }
-
-            // Build inventory context from child exports
-            let child_inv = collect_child_exports(&subdirs);
-            for bu in &bu_files {
-                errors.extend(validate_bu_file(bu, r, &child_inv));
-            }
+        for subdir in &subdirs {
+            validate_child_rank(subdir, &Rank::Theater, &mut errors);
         }
+        return errors;
+    }
+
+    // ── Skirmish: no sub-folders, only .bu files ──────────────────────────────
+    if rank == Rank::Skirmish {
+        if !subdirs.is_empty() {
+            errors.push(err(dir, format!(
+                "skirmish folder may not contain sub-folders (found {}); \
+                 only .bu files are allowed",
+                subdirs.len()
+            )));
+        }
+        if bu_files.len() > 5 {
+            errors.push(err(dir, format!(
+                "skirmish folder may contain at most 5 .bu files, found {}",
+                bu_files.len()
+            )));
+        }
+        for bu in &bu_files {
+            errors.extend(validate_bu_file(bu, &rank, &HashSet::new()));
+        }
+        return errors;
+    }
+
+    // ── Middle ranks: up to 5 sub-folders + up to 5 .bu files ────────────────
+    let child_rank = rank.child_rank().unwrap();
+
+    if subdirs.len() > 5 {
+        errors.push(err(dir, format!(
+            "{} folder may contain at most 5 {} sub-folders, found {}",
+            rank.name(), child_rank.name(), subdirs.len()
+        )));
+    }
+    if bu_files.len() > 5 {
+        errors.push(err(dir, format!(
+            "{} folder may contain at most 5 .bu files, found {}",
+            rank.name(), bu_files.len()
+        )));
+    }
+    for subdir in &subdirs {
+        validate_child_rank(subdir, &child_rank, &mut errors);
+    }
+
+    // Inventory context for .bu files at this level = everything below
+    let child_inv = collect_child_exports(&subdirs);
+    for bu in &bu_files {
+        errors.extend(validate_bu_file(bu, &rank, &child_inv));
     }
 
     errors
 }
 
-fn validate_child_rank(
-    subdir:   &Path,
-    expected: &Rank,
-    errors:   &mut Vec<ValidationError>,
-) {
+fn validate_child_rank(subdir: &Path, expected: &Rank, errors: &mut Vec<ValidationError>) {
     match read_folder_rank(subdir) {
         Some(ref actual) if actual == expected => {}
         Some(ref actual) => {
@@ -191,28 +168,17 @@ fn validate_bu_file(
 
     let source = match fs::read_to_string(path) {
         Ok(s)  => s,
-        Err(e) => {
-            errors.push(err(path, format!("could not read file: {}", e)));
-            return errors;
-        }
+        Err(e) => { errors.push(err(path, format!("could not read file: {}", e))); return errors; }
     };
 
-    let bu = match parser::parse_file(&source, false) {
-        Ok(f)  => f,
-        Err(e) => {
-            errors.push(err(path, format!("parse error: {}", e)));
-            return errors;
-        }
-    };
-
-    let sk = match bu {
-        BuFile::Skirmish(s)  => s,
-        BuFile::Inventory(_) => return errors,
+    let sk = match parser::parse_file(&source, false) {
+        Ok(BuFile::Skirmish(s))  => s,
+        Ok(BuFile::Inventory(_)) => return errors,
+        Err(e) => { errors.push(err(path, format!("parse error: {}", e))); return errors; }
     };
 
     let path_str = path.display().to_string();
 
-    // File rank must match folder rank
     if &sk.rank != folder_rank {
         errors.push(ferr(&path_str, format!(
             "file declares #rank: {} but lives in a {} folder",
@@ -220,20 +186,15 @@ fn validate_bu_file(
         )));
     }
 
-    // Max 5 bullets per file
     if sk.bullets.len() > 5 {
         errors.push(ferr(&path_str, format!(
-            "a .bu file may contain at most 5 bullets, found {}",
-            sk.bullets.len()
+            "a .bu file may contain at most 5 bullets, found {}", sk.bullets.len()
         )));
     }
 
-    // Every exported name must have a matching bullet
     for name in &sk.exports {
         if !sk.bullets.iter().any(|b| &b.name == name) {
-            errors.push(ferr(&path_str, format!(
-                "#export '{}' has no matching bullet", name
-            )));
+            errors.push(ferr(&path_str, format!("#export '{}' has no matching bullet", name)));
         }
     }
 
@@ -254,26 +215,23 @@ fn validate_bullet(
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
-    match &bullet.body {
-        BulletBody::Native { .. } => {}
-        BulletBody::Pipes(pipes) => {
-            let empty = HashSet::new();
-            let allowed = if folder_rank == &Rank::Skirmish {
-                &empty
-            } else {
-                inv_names
-            };
-            errors.extend(validate_pipes(
-                pipes,
-                &bullet.name,
-                &bullet.output.name,
-                &bullet.params,
-                path,
-                allowed,
-                folder_rank == &Rank::Skirmish,
-            ));
-        }
-    }
+    let pipes = match &bullet.body {
+        BulletBody::Native { .. }  => return errors,
+        BulletBody::Pipes(p)       => p,
+    };
+
+    let empty   = HashSet::new();
+    let allowed = if folder_rank == &Rank::Skirmish { &empty } else { inv_names };
+
+    errors.extend(validate_pipes(
+        pipes,
+        &bullet.name,
+        &bullet.output.name,
+        &bullet.params,
+        path,
+        allowed,
+        folder_rank == &Rank::Skirmish,
+    ));
 
     errors
 }
@@ -289,7 +247,6 @@ fn validate_pipes(
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
-    // Max 5 pipes per bullet
     if pipes.len() > 5 {
         errors.push(ferr(path, format!(
             "bullet '{}': may contain at most 5 pipe statements, found {}",
@@ -297,16 +254,12 @@ fn validate_pipes(
         )));
     }
 
-    let param_names: HashSet<&str> = params.iter()
-        .map(|p| p.name.as_str())
-        .collect();
-
+    let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
     let mut bound:    HashSet<String> = HashSet::new();
     let mut consumed: HashSet<String> = HashSet::new();
     let last = pipes.len().saturating_sub(1);
 
     for (i, pipe) in pipes.iter().enumerate() {
-        // Each input must be a declared param or an earlier binding
         for input in &pipe.inputs {
             if param_names.contains(input.as_str()) {
                 consumed.insert(input.clone());
@@ -320,21 +273,14 @@ fn validate_pipes(
             }
         }
 
-        // Validate calls inside the expression
-        collect_call_errors(
-            &pipe.expr, bullet_name, path, pipe.span,
-            inv_names, is_skirmish, &mut errors,
-        );
+        collect_call_errors(&pipe.expr, bullet_name, path, pipe.span, inv_names, is_skirmish, &mut errors);
 
-        // No rebinding
         if bound.contains(&pipe.binding) {
             errors.push(serr(path, pipe.span, format!(
-                "bullet '{}': '{{{}}}' is assigned more than once",
-                bullet_name, pipe.binding
+                "bullet '{}': '{{{}}}' is assigned more than once", bullet_name, pipe.binding
             )));
         }
 
-        // Last pipe must assign to the declared output name
         if i == last && pipe.binding != output_name {
             errors.push(serr(path, pipe.span, format!(
                 "bullet '{}': last pipe binds '{{{}}}' but declared output is '{{{}}}'",
@@ -345,12 +291,10 @@ fn validate_pipes(
         bound.insert(pipe.binding.clone());
     }
 
-    // Dead intermediate detection
     for b in &bound {
         if b != output_name && !consumed.contains(b) {
             errors.push(ferr(path, format!(
-                "bullet '{}': '{{{}}}' is produced but never consumed",
-                bullet_name, b
+                "bullet '{}': '{{{}}}' is produced but never consumed", bullet_name, b
             )));
         }
     }
@@ -368,9 +312,7 @@ fn collect_call_errors(
     errors:      &mut Vec<ValidationError>,
 ) {
     match expr {
-        Expr::Atom(a)      => {
-            check_atom(a, bullet_name, path, span, inv_names, is_skirmish, errors);
-        }
+        Expr::Atom(a)      => check_atom(a, bullet_name, path, span, inv_names, is_skirmish, errors),
         Expr::BinOp(b)     => {
             check_atom(&b.lhs, bullet_name, path, span, inv_names, is_skirmish, errors);
             check_atom(&b.rhs, bullet_name, path, span, inv_names, is_skirmish, errors);
@@ -401,20 +343,17 @@ fn check_atom(
             )));
             return;
         }
-
         if !inv_names.is_empty() && !inv_names.contains(name.as_str()) {
             errors.push(serr(path, span, format!(
                 "bullet '{}': calls '{}' which is not exported by any child inventory",
                 bullet_name, name
             )));
         }
-
         for arg in args {
             if let CallArg::BulletRef(r) = arg {
                 if !inv_names.is_empty() && !inv_names.contains(r.as_str()) {
                     errors.push(serr(path, span, format!(
-                        "bullet '{}': references '&{}' which is not exported \
-                         by any child inventory",
+                        "bullet '{}': references '&{}' which is not exported by any child inventory",
                         bullet_name, r
                     )));
                 }
@@ -423,7 +362,7 @@ fn check_atom(
     }
 }
 
-// ── Inventory / export helpers ────────────────────────────────────────────────
+// ── Export collection ─────────────────────────────────────────────────────────
 
 fn collect_child_exports(subdirs: &[PathBuf]) -> HashSet<String> {
     let mut names = HashSet::new();
@@ -462,8 +401,7 @@ pub fn read_folder_rank(dir: &Path) -> Option<Rank> {
 
 pub fn collect_bu_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
-        .into_iter().flatten().flatten()
-        .map(|e| e.path())
+        .into_iter().flatten().flatten().map(|e| e.path())
         .filter(|p| {
             p.is_file()
                 && p.extension().map(|x| x == "bu").unwrap_or(false)
@@ -477,8 +415,7 @@ pub fn collect_bu_files(dir: &Path) -> Vec<PathBuf> {
 
 pub fn collect_subdirs(dir: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = fs::read_dir(dir)
-        .into_iter().flatten().flatten()
-        .map(|e| e.path())
+        .into_iter().flatten().flatten().map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
     dirs.sort();
@@ -497,19 +434,14 @@ pub fn validate_bu_file_direct(
 
     if sk.bullets.len() > 5 {
         errors.push(ferr(path, format!(
-            "a .bu file may contain at most 5 bullets, found {}",
-            sk.bullets.len()
+            "a .bu file may contain at most 5 bullets, found {}", sk.bullets.len()
         )));
     }
-
     for name in &sk.exports {
         if !sk.bullets.iter().any(|b| &b.name == name) {
-            errors.push(ferr(path, format!(
-                "#export '{}' has no matching bullet", name
-            )));
+            errors.push(ferr(path, format!("#export '{}' has no matching bullet", name)));
         }
     }
-
     for bullet in &sk.bullets {
         errors.extend(validate_bullet(bullet, path, inv_names, folder_rank));
     }

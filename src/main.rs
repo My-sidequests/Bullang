@@ -1,14 +1,14 @@
 //! Bullang compiler entry point.
 //!
-//! Usage (run from inside the war root directory):
+//! Global invocation (like tsc): run from anywhere inside a Bullang tree.
+//! Bullang walks UP the directory tree to find the root inventory.bu,
+//! then uses that directory as the project root regardless of rank.
 //!
-//!   bullang build -name my_program -ext rs
-//!   bullang build -name my_program -ext rs -out /path/to/output
+//! Usage:
+//!   bullang build --name my_lib --ext rs
+//!   bullang build --name my_lib --ext rs --out /path/to/output
 //!   bullang check
 //!   bullang file path/to/file.bu
-//!
-//! Future: `bullang build` will be runnable from anywhere (like tsc),
-//! walking up the directory tree to find the war root automatically.
 
 mod ast;
 mod build;
@@ -18,17 +18,18 @@ mod typecheck;
 mod validator;
 
 use clap::{Parser as ClapParser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::ast::Backend;
 
-// ── CLI definition ────────────────────────────────────────────────────────────
+// ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(ClapParser)]
 #[command(
     name    = "bullang",
     version = "0.1.0",
     about   = "Bullang (.bu) transpiler\n\n\
-               Run from inside the war root directory.\n\
+               Run from anywhere inside a Bullang project tree.\n\
+               Bullang walks up to find the root automatically.\n\
                The source tree is never modified — all output is external."
 )]
 struct Cli {
@@ -38,10 +39,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Validate and type-check the war tree, then transpile it into a project.
-    /// Run from inside the war root directory.
+    /// Validate, type-check, and transpile the project into a standalone crate.
     Build {
-        /// Name for the output project (becomes the folder name and crate name)
+        /// Name for the output project (folder name and crate name)
         #[arg(long)]
         name: String,
 
@@ -49,17 +49,16 @@ enum Command {
         #[arg(short = 'e', long)]
         ext: String,
 
-        /// Output directory (default: ../\<name\>, a sibling of the war root)
+        /// Output directory (default: sibling of the root, named after --name)
         #[arg(short = 'o', long)]
         out: Option<PathBuf>,
     },
 
-    /// Validate and type-check the war tree without emitting any code.
-    /// Run from inside the war root directory.
+    /// Validate and type-check without emitting any code.
     Check,
 
-    /// Transpile a single .bu file to stdout (or --output).
-    /// Useful for quick inspection — no cross-file type checking.
+    /// Transpile a single .bu file to stdout or --output.
+    /// No cross-file type checking — useful for quick inspection.
     File {
         input: PathBuf,
         #[arg(short, long)]
@@ -81,50 +80,39 @@ fn main() {
 // ── build ─────────────────────────────────────────────────────────────────────
 
 fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
-    // Resolve backend from extension
     let backend = Backend::from_ext(&ext).unwrap_or_else(|| {
-        eprintln!(
-            "error: unknown extension '{}' — supported: rs",
-            ext
-        );
+        eprintln!("error: unknown extension '{}' — supported extensions: rs", ext);
         std::process::exit(1);
     });
 
-    // War root = current working directory
-    let war_root = std::env::current_dir().unwrap_or_else(|e| {
-        eprintln!("error: could not determine current directory: {}", e);
-        std::process::exit(1);
-    });
+    let root = find_root();
 
-    guard_war_root(&war_root);
-
-    // Output directory: --out if given, otherwise ../name (sibling of war root)
     let out_dir = match out {
         Some(p) => p,
-        None => war_root
-            .parent()
-            .unwrap_or(&war_root)
-            .join(&name),
+        None    => root.parent().unwrap_or(&root).join(&name),
     };
 
     // Refuse to write inside the source tree
-    if out_dir.starts_with(&war_root) {
+    if out_dir.starts_with(&root) {
         eprintln!(
-            "error: output '{}' must be outside the war source tree '{}'",
-            out_dir.display(), war_root.display()
+            "error: output '{}' must be outside the source tree '{}'",
+            out_dir.display(), root.display()
         );
         std::process::exit(1);
     }
 
+    let root_rank = validator::read_folder_rank(&root)
+        .expect("root has no rank — this should not happen after find_root()");
+
     println!("bullang build");
-    println!("  source  : {}", war_root.display());
+    println!("  root    : {} ({})", root.display(), root_rank.name());
     println!("  output  : {}", out_dir.display());
     println!("  name    : {}", name);
     println!("  backend : {}", backend.name());
     println!();
 
     // Phase 1: structural validation
-    let errors = validator::validate_tree(&war_root);
+    let errors = validator::validate_tree(&root);
     if !errors.is_empty() {
         for e in &errors { eprintln!("error: {}", e); }
         eprintln!("\n{} structural error(s) — build aborted", errors.len());
@@ -133,7 +121,7 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
     println!("structural validation ... ok");
 
     // Phase 2: type checking
-    let type_errors = typecheck::typecheck_tree(&war_root);
+    let type_errors = typecheck::typecheck_tree(&root);
     if !type_errors.is_empty() {
         for e in &type_errors { eprintln!("type error: {}", e); }
         eprintln!("\n{} type error(s) — build aborted", type_errors.len());
@@ -142,7 +130,7 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
     println!("type checking         ... ok");
 
     // Phase 3: code generation
-    let result = build::build(&war_root, &out_dir, &name, &backend);
+    let result = build::build(&root, &out_dir, &name, &backend);
     for e in &result.errors { eprintln!("error: {}", e); }
     if !result.errors.is_empty() {
         eprintln!("\nbuild failed -- {} error(s)", result.errors.len());
@@ -153,8 +141,6 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
     println!();
     println!("wrote {} file(s) to {}", result.files_written, out_dir.display());
     println!();
-
-    // Backend-specific next-step hint
     match backend {
         Backend::Rust => {
             println!("to compile:");
@@ -166,27 +152,22 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
 // ── check ─────────────────────────────────────────────────────────────────────
 
 fn cmd_check() {
-    let war_root = std::env::current_dir().unwrap_or_else(|e| {
-        eprintln!("error: could not determine current directory: {}", e);
-        std::process::exit(1);
-    });
+    let root = find_root();
+    let root_rank = validator::read_folder_rank(&root)
+        .expect("root has no rank");
 
-    guard_war_root(&war_root);
+    println!("bullang check -- root: {} ({})", root.display(), root_rank.name());
 
-    // Phase 1: structural validation
-    let errors = validator::validate_tree(&war_root);
+    let errors = validator::validate_tree(&root);
     if !errors.is_empty() {
         for e in &errors { eprintln!("error: {}", e); }
-        eprintln!("\n{} structural error(s) — fix before type checking",
-            errors.len());
+        eprintln!("\n{} structural error(s) — fix before type checking", errors.len());
         std::process::exit(1);
     }
 
-    // Phase 2: type checking
-    let type_errors = typecheck::typecheck_tree(&war_root);
+    let type_errors = typecheck::typecheck_tree(&root);
     if type_errors.is_empty() {
-        println!("ok -- {} validated and type-checked with no errors",
-            war_root.display());
+        println!("ok -- no errors found");
     } else {
         for e in &type_errors { eprintln!("type error: {}", e); }
         eprintln!("\n{} type error(s) found", type_errors.len());
@@ -199,8 +180,7 @@ fn cmd_check() {
 fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
     let source = read_file(&input);
 
-    let is_inventory = input
-        .file_name()
+    let is_inventory = input.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n == "inventory.bu")
         .unwrap_or(false);
@@ -213,22 +193,17 @@ fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
     match bu {
         ast::BuFile::Skirmish(ref sk) => {
             use std::collections::HashSet;
+            let path = input.display().to_string();
 
             let errors = validator::validate_bu_file_direct(
-                sk,
-                &input.display().to_string(),
-                &HashSet::new(),
-                &ast::Rank::Skirmish,
+                sk, &path, &HashSet::new(), &sk.rank,
             );
             if !errors.is_empty() {
                 for e in &errors { eprintln!("error: {}", e); }
                 std::process::exit(1);
             }
 
-            let type_errors = typecheck::typecheck_file(
-                sk,
-                &input.display().to_string(),
-            );
+            let type_errors = typecheck::typecheck_file(sk, &path);
             if !type_errors.is_empty() {
                 for e in &type_errors { eprintln!("type error: {}", e); }
                 std::process::exit(1);
@@ -242,45 +217,69 @@ fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
     }
 }
 
-// ── War root guard ────────────────────────────────────────────────────────────
+// ── Root detection ────────────────────────────────────────────────────────────
 
-/// Verify the given path is a valid war root.
-/// TODO (global invocation): walk up from cwd to find the war root
-/// automatically, like tsc walks up to find tsconfig.json.
-fn guard_war_root(root: &PathBuf) {
-    if !root.is_dir() {
-        eprintln!("error: '{}' is not a directory", root.display());
+/// Walk UP from the current directory to find the Bullang project root.
+///
+/// The root is the HIGHEST ancestor directory that still contains an
+/// inventory.bu file. This mirrors how tsc finds tsconfig.json —
+/// you can run `bullang` from anywhere inside the tree.
+///
+/// Algorithm:
+///   1. Start at cwd.
+///   2. Keep moving to the parent as long as the parent also has inventory.bu.
+///   3. Stop when the parent has no inventory.bu — current dir is the root.
+///
+/// If cwd itself has no inventory.bu, print a helpful error and exit.
+fn find_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("error: could not determine current directory: {}", e);
         std::process::exit(1);
-    }
+    });
 
-    let inv = root.join("inventory.bu");
-    if !inv.exists() {
+    if !cwd.join("inventory.bu").exists() {
         eprintln!(
             "error: no inventory.bu found in '{}'\n\
-             run bullang from inside the war root directory",
-            root.display()
+             run bullang from inside a Bullang project directory",
+            cwd.display()
         );
         std::process::exit(1);
     }
 
-    match validator::read_folder_rank(root) {
-        Some(ast::Rank::War) => {}
-        Some(other) => {
-            eprintln!(
-                "error: '{}' declares #rank: {} — expected #rank: war\n\
-                 run bullang from inside the war root directory",
-                root.display(), other.name()
-            );
-            std::process::exit(1);
+    // Walk up as long as the parent also has inventory.bu
+    let mut root = cwd.clone();
+    loop {
+        let parent = match root.parent() {
+            Some(p) => p.to_path_buf(),
+            None    => break,
+        };
+        if parent.join("inventory.bu").exists() {
+            root = parent;
+        } else {
+            break;
         }
+    }
+
+    // Validate that the found root has a valid rank
+    match validator::read_folder_rank(&root) {
+        Some(_) => {}
         None => {
             eprintln!(
-                "error: could not read rank from '{}/inventory.bu'",
+                "error: found inventory.bu at '{}' but could not read its #rank",
                 root.display()
             );
             std::process::exit(1);
         }
     }
+
+    root
+}
+
+/// Check if a directory looks like a Bullang folder of a specific rank.
+/// Kept for potential future use in diagnostics.
+#[allow(dead_code)]
+fn is_bu_folder(dir: &Path) -> bool {
+    dir.join("inventory.bu").exists()
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

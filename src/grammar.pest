@@ -11,6 +11,8 @@ ty_generic_args = { "<" ~ ty ~ ("," ~ ty)* ~ ">" }
 ty_atom         = { ident ~ ty_generic_args? }
 ty_tuple        = { "(" ~ ty ~ ("," ~ ty)+ ~ ")" }
 ty_array        = { "[" ~ ty ~ ";" ~ integer ~ "]" }
+ty_fn_params    = { "(" ~ (ty ~ ("," ~ ty)*)? ~ ")" }
+ty_fn           = { "fn" ~ ty_fn_params ~ ("->" ~ ty)? }
 ty              = { ty_tuple | ty_array | ty_fn | ty_atom }
 
 // ── Binding  {name} ───────────────────────────────────────────────────────────
@@ -34,12 +36,11 @@ input_list = { "(" ~ ident ~ ("," ~ ident)* ~ ")" }
 // ── Pipe statement ────────────────────────────────────────────────────────────
 pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ ";" }
 
-// ── Native (backend escape) block ─────────────────────────────────────────────
-// Captures everything between @rust and @end verbatim.
+// ── Native backend escape block ───────────────────────────────────────────────
 rust_block_inner = @{ (!"@end" ~ ANY)* }
 rust_block       =  { "@rust" ~ rust_block_inner ~ "@end" }
 
-// ── Bullet body: pure Bullang pipes OR a single native block ──────────────────
+// ── Bullet body: pure pipes OR one native block ───────────────────────────────
 bullet_body = { rust_block | pipe+ }
 
 // ── Function signature ────────────────────────────────────────────────────────
@@ -75,7 +76,3 @@ inventory_file = {
     ~ dir_rank
     ~ EOI
 }
-
-// ── Rust fn pointer type:  fn(T, U) -> V ─────────────────────────────────────
-ty_fn_params = { "(" ~ (ty ~ ("," ~ ty)*)? ~ ")" }
-ty_fn        = { "fn" ~ ty_fn_params ~ ("->" ~ ty)? }
