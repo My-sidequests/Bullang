@@ -9,7 +9,7 @@
 - run in your terminal :
   - git clone https://github.com/My-sidequests/Bullang.git bullang
   - cd bullang
-  - cargo build release
+  - cargo build --release
   - ./target/release/bullang install
  
     *Bullang is now globally installed and ready to use !*
