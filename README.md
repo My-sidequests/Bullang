@@ -1,10 +1,10 @@
-##How to use
+## How to use
 
-###Pre-requisite
+### Pre-requisite
 
 - Having Rust and Cargo installed
 
-###How to install
+### How to install
 
 - run in your terminal :
   - git clone https://github.com/My-sidequests/Bullang.git bullang
@@ -14,7 +14,7 @@
  
     *Bullang is now globally installed and ready to use !*
 
-###How to convert a folder
+### How to convert a folder
 
   - bullang convert my_folder : allows you to convert a Bullang folder nammed my_folder in Rust.
     Optional flags can be added:
