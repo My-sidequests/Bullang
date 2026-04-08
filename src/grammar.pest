@@ -51,28 +51,12 @@ output_decl = { "->" ~ ident ~ ":" ~ ty }
 // ── Bullet ────────────────────────────────────────────────────────────────────
 bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 
-// ── Directives ────────────────────────────────────────────────────────────────
-rank_val     = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
-category_val = { "algorithm" | "function" }
+// ── Source file: pure bullet declarations, no metadata ───────────────────────
+source_file = { SOI ~ bullet+ ~ EOI }
 
-dir_rank     = { "#rank"     ~ ":" ~ rank_val     ~ ";" }
-dir_category = { "#category" ~ ":" ~ category_val ~ ";" }
-dir_import   = { "#import"   ~ ":" ~ ident        ~ ";" }
-dir_export   = { "#export"   ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
-
-// ── File types ────────────────────────────────────────────────────────────────
-skirmish_file = {
-    SOI
-    ~ dir_rank
-    ~ dir_category
-    ~ dir_import*
-    ~ dir_export?
-    ~ bullet+
-    ~ EOI
-}
-
-inventory_file = {
-    SOI
-    ~ dir_rank
-    ~ EOI
-}
+// ── Inventory file ────────────────────────────────────────────────────────────
+// One line per source file: filename : fn1, fn2, fn3;
+rank_val   = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
+dir_rank   = { "#rank" ~ ":" ~ rank_val ~ ";" }
+inv_entry  = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
+inventory_file = { SOI ~ dir_rank ~ inv_entry* ~ EOI }

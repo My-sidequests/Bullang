@@ -10,8 +10,6 @@ pub struct Span {
 
 impl Span {
     pub fn new(line: usize, col: usize) -> Self { Self { line, col } }
-    pub fn unknown() -> Self { Self { line: 0, col: 0 } }
-    pub fn is_known(&self) -> bool { self.line > 0 }
 }
 
 // ── Backend ───────────────────────────────────────────────────────────────────
@@ -33,12 +31,12 @@ impl Backend {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
-    Skirmish,   // lowest
+    Skirmish,
     Tactic,
     Strategy,
     Battle,
     Theater,
-    War,        // highest
+    War,
 }
 
 impl Rank {
@@ -54,7 +52,6 @@ impl Rank {
         }
     }
 
-    /// The rank of immediate child folders.
     pub fn child_rank(&self) -> Option<Rank> {
         match self {
             Rank::War      => Some(Rank::Theater),
@@ -77,39 +74,8 @@ impl Rank {
         }
     }
 
-    /// True if this rank can contain .bu files of its own rank.
-    pub fn has_own_files(&self) -> bool {
-        *self != Rank::War
-    }
-
-    /// True if this rank can contain sub-folders.
-    pub fn has_sub_folders(&self) -> bool {
-        *self != Rank::Skirmish
-    }
-}
-
-// ── Category ──────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub enum Category {
-    Algorithm,
-    Function,
-}
-
-impl Category {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "algorithm" => Some(Category::Algorithm),
-            "function"  => Some(Category::Function),
-            _           => None,
-        }
-    }
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Category::Algorithm => "algorithm",
-            Category::Function  => "function",
-        }
-    }
+    pub fn has_own_files(&self) -> bool  { *self != Rank::War }
+    pub fn has_sub_folders(&self) -> bool { *self != Rank::Skirmish }
 }
 
 // ── Type system ───────────────────────────────────────────────────────────────
@@ -119,7 +85,6 @@ pub enum BuType {
     Named(String),
     Tuple(Vec<BuType>),
     Array(Box<BuType>, usize),
-    /// Placeholder when inference cannot determine a type — propagates silently.
     Unknown,
 }
 
@@ -224,35 +189,42 @@ pub struct Param {
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 
+/// A single function. All bullets are always public — there is no private code.
 #[derive(Debug, Clone)]
 pub struct Bullet {
-    pub name:     String,
-    pub params:   Vec<Param>,
-    pub output:   OutputDecl,
-    pub body:     BulletBody,
-    pub exported: bool,
-    pub span:     Span,
+    pub name:   String,
+    pub params: Vec<Param>,
+    pub output: OutputDecl,
+    pub body:   BulletBody,
+    pub span:   Span,
+}
+
+// ── Inventory entry ───────────────────────────────────────────────────────────
+
+/// One line in inventory.bu: `filename : fn1, fn2, fn3;`
+#[derive(Debug, Clone)]
+pub struct InventoryEntry {
+    pub file:      String,        // filename without .bu extension
+    pub functions: Vec<String>,   // all functions declared in that file
 }
 
 // ── File types ────────────────────────────────────────────────────────────────
 
+/// A source .bu file — just bullet declarations, no metadata.
 #[derive(Debug, Clone)]
-pub struct SkirmishFile {
-    pub rank:     Rank,
-    pub category: Category,
-    pub imports:  Vec<String>,
-    pub exports:  Vec<String>,
-    pub bullets:  Vec<Bullet>,
+pub struct SourceFile {
+    pub bullets: Vec<Bullet>,
 }
 
+/// An inventory.bu file — rank + complete manifest of the folder.
 #[derive(Debug, Clone)]
 pub struct InventoryFile {
     pub rank:    Rank,
-    pub exports: Vec<String>,
+    pub entries: Vec<InventoryEntry>,  // one per source file in this folder
 }
 
 #[derive(Debug, Clone)]
 pub enum BuFile {
-    Skirmish(SkirmishFile),
+    Source(SourceFile),
     Inventory(InventoryFile),
 }

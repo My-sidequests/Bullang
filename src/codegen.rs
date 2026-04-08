@@ -1,16 +1,15 @@
-//! Code generation — AST → target language source.
-//! Currently only the Rust backend is implemented.
+//! Code generation — AST → Rust source.
 
 use crate::ast::*;
 
-// ── Skirmish file → Rust source ───────────────────────────────────────────────
+// ── Source file → Rust ────────────────────────────────────────────────────────
 
-pub fn emit_skirmish(file: &SkirmishFile) -> String {
+pub fn emit_source(file: &SourceFile) -> String {
     let mut out = String::new();
     out.push_str("#[allow(unused_imports)]\n");
     out.push_str("use crate::*;\n\n");
     for bullet in &file.bullets {
-        out.push_str(&emit_bullet(bullet, &file.category));
+        out.push_str(&emit_bullet(bullet));
         out.push('\n');
     }
     out
@@ -18,23 +17,31 @@ pub fn emit_skirmish(file: &SkirmishFile) -> String {
 
 // ── Module files ──────────────────────────────────────────────────────────────
 
-pub fn emit_mod_rs(child_modules: &[String], _exports: &[String]) -> String {
+pub fn emit_mod_rs(child_modules: &[String]) -> String {
     let mut out = String::new();
-    for module in child_modules { out.push_str(&format!("pub mod {};\n", module)); }
+    for module in child_modules {
+        out.push_str(&format!("pub mod {};\n", module));
+    }
     if !child_modules.is_empty() {
         out.push('\n');
-        for module in child_modules { out.push_str(&format!("pub use {}::*;\n", module)); }
+        for module in child_modules {
+            out.push_str(&format!("pub use {}::*;\n", module));
+        }
     }
     out
 }
 
-pub fn emit_lib_rs(child_modules: &[String], _exports: &[String]) -> String {
+pub fn emit_lib_rs(child_modules: &[String]) -> String {
     let mut out = String::new();
     out.push_str("#![allow(unused_imports)]\n\n");
-    for module in child_modules { out.push_str(&format!("pub mod {};\n", module)); }
+    for module in child_modules {
+        out.push_str(&format!("pub mod {};\n", module));
+    }
     if !child_modules.is_empty() {
         out.push('\n');
-        for module in child_modules { out.push_str(&format!("pub use {}::*;\n", module)); }
+        for module in child_modules {
+            out.push_str(&format!("pub use {}::*;\n", module));
+        }
     }
     out
 }
@@ -48,16 +55,16 @@ pub fn emit_cargo_toml(crate_name: &str) -> String {
 
 // ── Bullet → Rust function ────────────────────────────────────────────────────
 
-fn emit_bullet(bullet: &Bullet, category: &Category) -> String {
+fn emit_bullet(bullet: &Bullet) -> String {
     let mut out = String::new();
-    out.push_str(&format!("/// [{}]\n", category.as_str()));
-    let vis    = if bullet.exported { "pub " } else { "" };
+
     let params = bullet.params.iter()
         .map(|p| format!("{}: {}", p.name, p.ty.to_rust()))
         .collect::<Vec<_>>().join(", ");
     let ret_ty = bullet.output.ty.to_rust();
 
-    out.push_str(&format!("{}fn {}({}) -> {} {{\n", vis, bullet.name, params, ret_ty));
+    // All bullets are always public
+    out.push_str(&format!("pub fn {}({}) -> {} {{\n", bullet.name, params, ret_ty));
 
     match &bullet.body {
         BulletBody::Pipes(pipes) => {
@@ -90,7 +97,9 @@ fn emit_expr(expr: &Expr) -> String {
     match expr {
         Expr::Atom(a)      => emit_atom(a),
         Expr::BinOp(b)     => format!("{} {} {}", emit_atom(&b.lhs), b.op, emit_atom(&b.rhs)),
-        Expr::Tuple(exprs) => format!("({})", exprs.iter().map(emit_expr).collect::<Vec<_>>().join(", ")),
+        Expr::Tuple(exprs) => format!(
+            "({})", exprs.iter().map(emit_expr).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 

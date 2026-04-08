@@ -1,7 +1,7 @@
-//! Type checking pass — runs after structural validation.
+//! Type checking pass.
 //!
-//! Works with any rank as root.
-//! All errors include file + line:col from the pipe's Span.
+//! Builds a TypeEnv bottom-up from inventory entries + actual function
+//! signatures, then checks every call site for arity and type correctness.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -9,7 +9,7 @@ use std::fs;
 
 use crate::ast::*;
 use crate::parser;
-use crate::validator::{collect_bu_files, collect_subdirs, read_folder_rank};
+use crate::validator::{collect_bu_files, collect_subdirs, read_inventory};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -37,18 +37,17 @@ fn terr(path: &str, span: Span, msg: impl Into<String>) -> TypeError {
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
-/// Type-check a full tree rooted at any rank.
 pub fn typecheck_tree(root: &Path) -> Vec<TypeError> {
     let mut errors = Vec::new();
     check_folder(root, &mut errors);
     errors
 }
 
-/// Type-check a single pre-parsed file with no cross-file context.
-pub fn typecheck_file(sk: &SkirmishFile, path: &str) -> Vec<TypeError> {
+pub fn typecheck_file(sf: &SourceFile, path: &str) -> Vec<TypeError> {
     let mut errors = Vec::new();
-    for bullet in &sk.bullets {
-        errors.extend(check_bullet(bullet, path, &TypeEnv::new(), sk.rank == Rank::Skirmish));
+    for bullet in &sf.bullets {
+        // No env context in single-file mode
+        errors.extend(check_bullet(bullet, path, &TypeEnv::new(), true));
     }
     errors
 }
@@ -56,31 +55,32 @@ pub fn typecheck_file(sk: &SkirmishFile, path: &str) -> Vec<TypeError> {
 // ── Folder-level type checking ────────────────────────────────────────────────
 
 fn check_folder(dir: &Path, errors: &mut Vec<TypeError>) -> TypeEnv {
-    let rank = match read_folder_rank(dir) {
-        Some(r) => r,
-        None    => return TypeEnv::new(),
+    let inv = match read_inventory(dir) {
+        Ok(i)  => i,
+        Err(_) => return TypeEnv::new(),
     };
 
     let mut env = TypeEnv::new();
 
-    // War: only sub-folders, no .bu files
-    if rank == Rank::War {
+    // War: only recurse, no source files
+    if inv.rank == Rank::War {
         for subdir in collect_subdirs(dir) {
             env.extend(check_folder(&subdir, errors));
         }
         return env;
     }
 
-    // All other ranks: recurse into sub-folders first (bottom-up)
-    if rank.has_sub_folders() {
+    // Recurse into sub-folders first (bottom-up)
+    if inv.rank.has_sub_folders() {
         for subdir in collect_subdirs(dir) {
             env.extend(check_folder(&subdir, errors));
         }
     }
 
-    // Type-check .bu files using the accumulated child env
-    let is_skirmish = rank == Rank::Skirmish;
-    for bu_path in collect_bu_files(dir) {
+    // Type-check each source file listed in inventory
+    let is_skirmish = inv.rank == Rank::Skirmish;
+    for entry in &inv.entries {
+        let bu_path = dir.join(format!("{}.bu", entry.file));
         let file_env = check_bu_file(&bu_path, &env, is_skirmish, errors);
         env.extend(file_env);
     }
@@ -103,22 +103,21 @@ fn check_bu_file(
         Err(_) => return exported_env,
     };
 
-    let sk = match parser::parse_file(&source, false) {
-        Ok(BuFile::Skirmish(s))  => s,
-        Ok(BuFile::Inventory(_)) => return exported_env,
-        Err(_)                   => return exported_env,
+    let sf = match parser::parse_file(&source, false) {
+        Ok(BuFile::Source(s)) => s,
+        _                     => return exported_env,
     };
 
     let path_str = path.display().to_string();
 
-    for bullet in &sk.bullets {
+    for bullet in &sf.bullets {
         errors.extend(check_bullet(bullet, &path_str, env, is_skirmish));
-        if bullet.exported {
-            exported_env.insert(bullet.name.clone(), BulletSig {
-                params:  bullet.params.iter().map(|p| p.ty.clone()).collect(),
-                returns: bullet.output.ty.clone(),
-            });
-        }
+
+        // All bullets are always public — register all of them
+        exported_env.insert(bullet.name.clone(), BulletSig {
+            params:  bullet.params.iter().map(|p| p.ty.clone()).collect(),
+            returns: bullet.output.ty.clone(),
+        });
     }
 
     exported_env
@@ -132,13 +131,12 @@ fn check_bullet(
     env:         &TypeEnv,
     is_skirmish: bool,
 ) -> Vec<TypeError> {
-    let mut errors = Vec::new();
-
     let pipes = match &bullet.body {
-        BulletBody::Native { .. } => return errors,
+        BulletBody::Native { .. } => return vec![],
         BulletBody::Pipes(p)      => p,
     };
 
+    let mut errors = Vec::new();
     let mut local: HashMap<String, BuType> = bullet.params.iter()
         .map(|p| (p.name.clone(), p.ty.clone()))
         .collect();
@@ -151,8 +149,6 @@ fn check_bullet(
             &bullet.name, path, pipe.span, &mut errors,
         );
 
-        // Last pipe: inferred type must match declared output type
-        // (input types and output type are always independent — i16 in / Vec<u32> out is valid)
         if i == last && !types_compatible(&expr_type, &bullet.output.ty) {
             errors.push(terr(path, pipe.span, format!(
                 "bullet '{}': last pipe produces {} but declared output is {}",
@@ -224,9 +220,7 @@ fn infer_atom(
     errors:      &mut Vec<TypeError>,
 ) -> BuType {
     match atom {
-        // Integer literals are untyped — rustc resolves from context
-        Atom::Integer(_) => BuType::Unknown,
-
+        Atom::Integer(_)  => BuType::Unknown,
         Atom::Ident(name) => local.get(name).cloned().unwrap_or(BuType::Unknown),
 
         Atom::Call { name, args } => {
@@ -252,7 +246,8 @@ fn infer_atom(
                         if actual_ty != BuType::Unknown && !types_compatible(&actual_ty, expected_ty) {
                             errors.push(terr(path, span, format!(
                                 "bullet '{}': argument {} to '{}' is {} but expected {}",
-                                bullet_name, i + 1, name, actual_ty.to_rust(), expected_ty.to_rust()
+                                bullet_name, i + 1, name,
+                                actual_ty.to_rust(), expected_ty.to_rust()
                             )));
                         }
                     }

@@ -16,8 +16,8 @@ pub fn parse_file(
         let mut pairs = BulParser::parse(Rule::inventory_file, source)?;
         Ok(BuFile::Inventory(parse_inventory(pairs.next().unwrap())))
     } else {
-        let mut pairs = BulParser::parse(Rule::skirmish_file, source)?;
-        Ok(BuFile::Skirmish(parse_skirmish(pairs.next().unwrap())))
+        let mut pairs = BulParser::parse(Rule::source_file, source)?;
+        Ok(BuFile::Source(parse_source(pairs.next().unwrap())))
     }
 }
 
@@ -28,48 +28,42 @@ fn span_of(pair: &Pair<Rule>) -> Span {
     Span::new(line, col)
 }
 
-// ── File-level parsers ────────────────────────────────────────────────────────
+// ── Source file ───────────────────────────────────────────────────────────────
 
-fn parse_skirmish(pair: Pair<Rule>) -> SkirmishFile {
-    let mut rank     = None;
-    let mut category = None;
-    let mut imports  = Vec::new();
-    let mut exports  = Vec::new();
-    let mut bullets  = Vec::new();
-
-    for inner in pair.into_inner() {
-        match inner.as_rule() {
-            Rule::dir_rank     => { rank     = Rank::from_str(inner.into_inner().next().unwrap().as_str()); }
-            Rule::dir_category => { category = Category::from_str(inner.into_inner().next().unwrap().as_str()); }
-            Rule::dir_import   => { imports.push(inner.into_inner().next().unwrap().as_str().to_string()); }
-            Rule::dir_export   => { exports = inner.into_inner().map(|p| p.as_str().to_string()).collect(); }
-            Rule::bullet       => { bullets.push(parse_bullet(inner)); }
-            Rule::EOI          => {}
-            _                  => {}
-        }
-    }
-
-    let bullets = bullets.into_iter()
-        .map(|mut b| { b.exported = exports.contains(&b.name); b })
+fn parse_source(pair: Pair<Rule>) -> SourceFile {
+    let bullets = pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::bullet)
+        .map(parse_bullet)
         .collect();
-
-    SkirmishFile {
-        rank:     rank.expect("missing #rank directive"),
-        category: category.expect("missing #category directive"),
-        imports, exports, bullets,
-    }
+    SourceFile { bullets }
 }
 
+// ── Inventory file ────────────────────────────────────────────────────────────
+
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
-    let mut rank = None;
+    let mut rank    = None;
+    let mut entries = Vec::new();
+
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::dir_rank => { rank = Rank::from_str(inner.into_inner().next().unwrap().as_str()); }
-            Rule::EOI      => {}
-            _              => {}
+            Rule::dir_rank => {
+                rank = Rank::from_str(inner.into_inner().next().unwrap().as_str());
+            }
+            Rule::inv_entry => {
+                let mut ci   = inner.into_inner();
+                let file     = ci.next().unwrap().as_str().to_string();
+                let functions = ci.map(|p| p.as_str().to_string()).collect();
+                entries.push(InventoryEntry { file, functions });
+            }
+            Rule::EOI => {}
+            _         => {}
         }
     }
-    InventoryFile { rank: rank.expect("missing #rank directive"), exports: Vec::new() }
+
+    InventoryFile {
+        rank:    rank.expect("inventory.bu is missing #rank"),
+        entries,
+    }
 }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
@@ -81,7 +75,7 @@ fn parse_bullet(pair: Pair<Rule>) -> Bullet {
     let params      = parse_param_list(inner.next().unwrap());
     let output      = parse_output_decl(inner.next().unwrap());
     let body        = parse_bullet_body(inner.next().unwrap());
-    Bullet { name, params, output, body, exported: false, span: bullet_span }
+    Bullet { name, params, output, body, span: bullet_span }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {
@@ -89,22 +83,30 @@ fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {
         .filter(|p| p.as_rule() == Rule::param)
         .map(|p| {
             let mut pi = p.into_inner();
-            Param { name: pi.next().unwrap().as_str().to_string(), ty: parse_ty(pi.next().unwrap()) }
+            Param {
+                name: pi.next().unwrap().as_str().to_string(),
+                ty:   parse_ty(pi.next().unwrap()),
+            }
         })
         .collect()
 }
 
 fn parse_output_decl(pair: Pair<Rule>) -> OutputDecl {
     let mut inner = pair.into_inner();
-    OutputDecl { name: inner.next().unwrap().as_str().to_string(), ty: parse_ty(inner.next().unwrap()) }
+    OutputDecl {
+        name: inner.next().unwrap().as_str().to_string(),
+        ty:   parse_ty(inner.next().unwrap()),
+    }
 }
 
 fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     if children.is_empty() { panic!("bullet body is empty"); }
+
     match children[0].as_rule() {
         Rule::rust_block => {
-            let code = children[0].clone().into_inner().next().unwrap().as_str().to_string();
+            let code = children[0].clone().into_inner()
+                .next().unwrap().as_str().to_string();
             BulletBody::Native { backend: Backend::Rust, code }
         }
         Rule::pipe => {
@@ -122,7 +124,8 @@ fn parse_pipe(pair: Pair<Rule>) -> Pipe {
     let inputs: Vec<String> = inner.next().unwrap().into_inner()
         .map(|p| p.as_str().to_string()).collect();
     let expr    = parse_pipe_val(inner.next().unwrap());
-    let binding = inner.next().unwrap().into_inner().next().unwrap().as_str().to_string();
+    let binding = inner.next().unwrap().into_inner()
+        .next().unwrap().as_str().to_string();
     Pipe { inputs, expr, binding, span: pipe_span }
 }
 
@@ -151,7 +154,7 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
 fn parse_atom(pair: Pair<Rule>) -> Atom {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
-        Rule::call    => {
+        Rule::call => {
             let mut ci = inner.into_inner();
             let name   = ci.next().unwrap().as_str().to_string();
             let args   = ci.map(parse_call_arg).collect();
@@ -166,9 +169,11 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
 fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
-        Rule::bullet_ref => CallArg::BulletRef(inner.into_inner().next().unwrap().as_str().to_string()),
-        Rule::integer    => CallArg::Value(inner.as_str().to_string()),
-        Rule::ident      => CallArg::Value(inner.as_str().to_string()),
+        Rule::bullet_ref => CallArg::BulletRef(
+            inner.into_inner().next().unwrap().as_str().to_string()
+        ),
+        Rule::integer => CallArg::Value(inner.as_str().to_string()),
+        Rule::ident   => CallArg::Value(inner.as_str().to_string()),
         other => unreachable!("unexpected call_arg: {:?}", other),
     }
 }
