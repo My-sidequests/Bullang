@@ -1,14 +1,14 @@
 //! Bullang compiler entry point.
 //!
-//! Global invocation (like tsc): run from anywhere inside a Bullang tree.
-//! Bullang walks UP the directory tree to find the root inventory.bu,
-//! then uses that directory as the project root regardless of rank.
+//! Global invocation (like tsc/go): install once, run from anywhere.
 //!
-//! Usage:
-//!   bullang build --name my_lib --ext rs
-//!   bullang build --name my_lib --ext rs --out /path/to/output
-//!   bullang check
-//!   bullang file path/to/file.bu
+//!   bullang install                        — install to system PATH
+//!   bullang convert my_folder              — transpile (default: _my_folder, rs)
+//!   bullang convert my_folder -n out_name  — custom output name
+//!   bullang convert my_folder -e rs        — explicit extension
+//!   bullang convert my_folder --out /path  — explicit output path
+//!   bullang check                          — validate from cwd (walks up to root)
+//!   bullang file path/to/file.bu           — single file, no tree context
 
 mod ast;
 mod build;
@@ -28,8 +28,7 @@ use crate::ast::Backend;
     name    = "bullang",
     version = "0.1.0",
     about   = "Bullang (.bu) transpiler\n\n\
-               Run from anywhere inside a Bullang project tree.\n\
-               Bullang walks up to find the root automatically.\n\
+               Install once with `bullang install`, then run from anywhere.\n\
                The source tree is never modified — all output is external."
 )]
 struct Cli {
@@ -39,26 +38,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Validate, type-check, and transpile the project into a standalone crate.
-    Build {
-        /// Name for the output project (folder name and crate name)
-        #[arg(long)]
-        name: String,
+    /// Install bullang to your system PATH so it can be run from anywhere.
+    Install,
 
-        /// Target language extension: 'rs' for Rust (more backends coming)
-        #[arg(short = 'e', long)]
+    /// Transpile a Bullang project folder into a target-language crate/project.
+    ///
+    /// Examples:
+    ///   bullang convert my_folder
+    ///   bullang convert my_folder -n my_lib -e rs
+    ///   bullang convert my_folder --out ~/projects/my_lib
+    Convert {
+        /// Path to the Bullang source folder.
+        /// Defaults to the current directory.
+        folder: Option<PathBuf>,
+
+        /// Output folder name (placed next to the source folder).
+        /// Default: _<source_folder_name>
+        #[arg(short = 'n', long)]
+        name: Option<String>,
+
+        /// Target language extension (default: rs).
+        /// Supported: rs
+        #[arg(short = 'e', long, default_value = "rs")]
         ext: String,
 
-        /// Output directory (default: sibling of the root, named after --name)
-        #[arg(short = 'o', long)]
+        /// Explicit full output path. Overrides -n when given.
+        #[arg(long)]
         out: Option<PathBuf>,
     },
 
-    /// Validate and type-check without emitting any code.
+    /// Validate and type-check the project from the current directory.
+    /// Walks up automatically to find the root, like tsc.
     Check,
 
     /// Transpile a single .bu file to stdout or --output.
-    /// No cross-file type checking — useful for quick inspection.
+    /// Useful for quick inspection — no cross-file type checking.
     File {
         input: PathBuf,
         #[arg(short, long)]
@@ -71,29 +85,170 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Build { name, ext, out } => cmd_build(name, ext, out),
-        Command::Check                    => cmd_check(),
-        Command::File { input, output }   => cmd_file(input, output),
+        Command::Install                             => cmd_install(),
+        Command::Convert { folder, name, ext, out } => cmd_convert(folder, name, ext, out),
+        Command::Check                              => cmd_check(),
+        Command::File { input, output }             => cmd_file(input, output),
     }
 }
 
-// ── build ─────────────────────────────────────────────────────────────────────
+// ── install ───────────────────────────────────────────────────────────────────
 
-fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
-    let backend = Backend::from_ext(&ext).unwrap_or_else(|| {
-        eprintln!("error: unknown extension '{}' — supported extensions: rs", ext);
+fn cmd_install() {
+    // The currently running binary is the one we want to install.
+    let current_exe = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("error: could not locate current binary: {}", e);
         std::process::exit(1);
     });
 
-    let root = find_root();
+    // Try system-wide first, fall back to user-local
+    let candidates: &[&str] = &[
+        "/usr/local/bin/bullang",
+        "/usr/bin/bullang",
+    ];
 
+    let user_local = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{}/.local/bin/bullang", home)
+    };
+
+    let dest = find_install_dest(candidates, &user_local);
+
+    // Ensure the destination directory exists
+    if let Some(parent) = Path::new(&dest).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("error: could not create {}: {}", parent.display(), e);
+            std::process::exit(1);
+        }
+    }
+
+    // Copy the binary
+    match std::fs::copy(&current_exe, &dest) {
+        Ok(_) => {
+            // Make executable on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dest)
+                    .unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dest, perms).ok();
+            }
+            println!("installed: {}", dest);
+            println!();
+            println!("bullang is now available globally.");
+            println!("you can run `bullang convert <folder>` from anywhere.");
+
+            // Warn if the install dir is not in PATH
+            check_path_contains(&dest);
+        }
+        Err(e) => {
+            eprintln!("error: could not install to {}: {}", dest, e);
+            eprintln!();
+            eprintln!("try running with sudo, or install to a user-local path:");
+            eprintln!("  sudo bullang install");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Find the first writable install destination.
+fn find_install_dest(system_paths: &[&str], user_fallback: &str) -> String {
+    for path in system_paths {
+        let dir = Path::new(path).parent().unwrap_or(Path::new("/usr/local/bin"));
+        if is_writable(dir) {
+            return path.to_string();
+        }
+    }
+    user_fallback.to_string()
+}
+
+fn is_writable(path: &Path) -> bool {
+    // Try creating a temp file in the directory
+    if !path.exists() { return false; }
+    let test = path.join(".bullang_write_test");
+    match std::fs::write(&test, b"") {
+        Ok(_) => { std::fs::remove_file(test).ok(); true }
+        Err(_) => false,
+    }
+}
+
+fn check_path_contains(dest: &str) {
+    let dest_dir = Path::new(dest).parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let in_path  = path_var.split(':').any(|p| p == dest_dir);
+
+    if !in_path {
+        println!();
+        println!("note: {} is not in your PATH.", dest_dir);
+        println!("add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):");
+        println!("  export PATH=\"{}:$PATH\"", dest_dir);
+    }
+}
+
+// ── convert ───────────────────────────────────────────────────────────────────
+
+fn cmd_convert(
+    folder: Option<PathBuf>,
+    name:   Option<String>,
+    ext:    String,
+    out:    Option<PathBuf>,
+) {
+    // Resolve the backend
+    let backend = Backend::from_ext(&ext).unwrap_or_else(|| {
+        eprintln!(
+            "error: unknown extension '{}'\n\
+             supported: rs",
+            ext
+        );
+        std::process::exit(1);
+    });
+
+    // Resolve the source folder
+    let source_dir = match folder {
+        Some(ref p) => {
+            let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+            if !canonical.is_dir() {
+                eprintln!("error: '{}' is not a directory", p.display());
+                std::process::exit(1);
+            }
+            canonical
+        }
+        None => std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("error: could not determine current directory: {}", e);
+            std::process::exit(1);
+        }),
+    };
+
+    // Find the Bullang root (walk up from source_dir)
+    let root = find_root_from(&source_dir);
+
+    // Derive the source folder name for default output naming
+    let source_name = source_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("bullang_project")
+        .to_string();
+
+    // Resolve the output directory
+    // Priority: --out > -n > default (_<source_name>)
     let out_dir = match out {
         Some(p) => p,
-        None    => root.parent().unwrap_or(&root).join(&name),
+        None => {
+            let out_name = name.unwrap_or_else(|| format!("_{}", source_name));
+            // Place next to the source folder
+            source_dir
+                .parent()
+                .unwrap_or(&source_dir)
+                .join(out_name)
+        }
     };
 
     // Refuse to write inside the source tree
-    if out_dir.starts_with(&root) {
+    if out_dir.starts_with(&root) || root.starts_with(&out_dir) {
         eprintln!(
             "error: output '{}' must be outside the source tree '{}'",
             out_dir.display(), root.display()
@@ -101,13 +256,20 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
         std::process::exit(1);
     }
 
-    let root_rank = validator::read_folder_rank(&root)
-        .expect("root has no rank — this should not happen after find_root()");
+    // Derive crate name from the output folder name
+    let crate_name = out_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("bullang_out")
+        .to_string();
 
-    println!("bullang build");
-    println!("  root    : {} ({})", root.display(), root_rank.name());
+    let root_rank = validator::read_folder_rank(&root)
+        .expect("root inventory.bu has no rank");
+
+    println!("bullang convert");
+    println!("  source  : {} ({})", root.display(), root_rank.name());
     println!("  output  : {}", out_dir.display());
-    println!("  name    : {}", name);
+    println!("  crate   : {}", crate_name);
     println!("  backend : {}", backend.name());
     println!();
 
@@ -115,7 +277,7 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
     let errors = validator::validate_tree(&root);
     if !errors.is_empty() {
         for e in &errors { eprintln!("error: {}", e); }
-        eprintln!("\n{} structural error(s) — build aborted", errors.len());
+        eprintln!("\n{} structural error(s) — convert aborted", errors.len());
         std::process::exit(1);
     }
     println!("structural validation ... ok");
@@ -124,16 +286,16 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
     let type_errors = typecheck::typecheck_tree(&root);
     if !type_errors.is_empty() {
         for e in &type_errors { eprintln!("type error: {}", e); }
-        eprintln!("\n{} type error(s) — build aborted", type_errors.len());
+        eprintln!("\n{} type error(s) — convert aborted", type_errors.len());
         std::process::exit(1);
     }
     println!("type checking         ... ok");
 
     // Phase 3: code generation
-    let result = build::build(&root, &out_dir, &name, &backend);
+    let result = build::build(&root, &out_dir, &crate_name, &backend);
     for e in &result.errors { eprintln!("error: {}", e); }
     if !result.errors.is_empty() {
-        eprintln!("\nbuild failed -- {} error(s)", result.errors.len());
+        eprintln!("\nconvert failed -- {} error(s)", result.errors.len());
         std::process::exit(1);
     }
 
@@ -141,9 +303,10 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
     println!();
     println!("wrote {} file(s) to {}", result.files_written, out_dir.display());
     println!();
+
     match backend {
         Backend::Rust => {
-            println!("to compile:");
+            println!("to compile the generated Rust crate:");
             println!("  cd {} && cargo build", out_dir.display());
         }
     }
@@ -152,11 +315,13 @@ fn cmd_build(name: String, ext: String, out: Option<PathBuf>) {
 // ── check ─────────────────────────────────────────────────────────────────────
 
 fn cmd_check() {
-    let root = find_root();
-    let root_rank = validator::read_folder_rank(&root)
-        .expect("root has no rank");
+    let cwd  = current_dir();
+    let root = find_root_from(&cwd);
+    let rank = validator::read_folder_rank(&root).expect("root has no rank");
 
-    println!("bullang check -- root: {} ({})", root.display(), root_rank.name());
+    println!("bullang check");
+    println!("  root : {} ({})", root.display(), rank.name());
+    println!();
 
     let errors = validator::validate_tree(&root);
     if !errors.is_empty() {
@@ -219,35 +384,22 @@ fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
 
 // ── Root detection ────────────────────────────────────────────────────────────
 
-/// Walk UP from the current directory to find the Bullang project root.
+/// Walk UP from `start` to find the topmost Bullang root.
 ///
-/// The root is the HIGHEST ancestor directory that still contains an
-/// inventory.bu file. This mirrors how tsc finds tsconfig.json —
-/// you can run `bullang` from anywhere inside the tree.
-///
-/// Algorithm:
-///   1. Start at cwd.
-///   2. Keep moving to the parent as long as the parent also has inventory.bu.
-///   3. Stop when the parent has no inventory.bu — current dir is the root.
-///
-/// If cwd itself has no inventory.bu, print a helpful error and exit.
-fn find_root() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|e| {
-        eprintln!("error: could not determine current directory: {}", e);
-        std::process::exit(1);
-    });
-
-    if !cwd.join("inventory.bu").exists() {
+/// The root is the highest ancestor that still contains an inventory.bu.
+/// This allows `bullang convert` and `bullang check` to work from any
+/// subdirectory inside a project, just like `tsc` with tsconfig.json.
+fn find_root_from(start: &Path) -> PathBuf {
+    if !start.join("inventory.bu").exists() {
         eprintln!(
             "error: no inventory.bu found in '{}'\n\
-             run bullang from inside a Bullang project directory",
-            cwd.display()
+             '{}' does not appear to be a Bullang project folder",
+            start.display(), start.display()
         );
         std::process::exit(1);
     }
 
-    // Walk up as long as the parent also has inventory.bu
-    let mut root = cwd.clone();
+    let mut root = start.to_path_buf();
     loop {
         let parent = match root.parent() {
             Some(p) => p.to_path_buf(),
@@ -260,29 +412,25 @@ fn find_root() -> PathBuf {
         }
     }
 
-    // Validate that the found root has a valid rank
-    match validator::read_folder_rank(&root) {
-        Some(_) => {}
-        None => {
-            eprintln!(
-                "error: found inventory.bu at '{}' but could not read its #rank",
-                root.display()
-            );
-            std::process::exit(1);
-        }
+    if validator::read_folder_rank(&root).is_none() {
+        eprintln!(
+            "error: found inventory.bu at '{}' but could not read its #rank",
+            root.display()
+        );
+        std::process::exit(1);
     }
 
     root
 }
 
-/// Check if a directory looks like a Bullang folder of a specific rank.
-/// Kept for potential future use in diagnostics.
-#[allow(dead_code)]
-fn is_bu_folder(dir: &Path) -> bool {
-    dir.join("inventory.bu").exists()
-}
-
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+fn current_dir() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("error: could not determine current directory: {}", e);
+        std::process::exit(1);
+    })
+}
 
 fn read_file(path: &PathBuf) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| {
