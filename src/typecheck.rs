@@ -1,7 +1,4 @@
 //! Type checking pass.
-//!
-//! Builds a TypeEnv bottom-up from inventory entries + actual function
-//! signatures, then checks every call site for arity and type correctness.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -9,7 +6,7 @@ use std::fs;
 
 use crate::ast::*;
 use crate::parser;
-use crate::validator::{collect_bu_files, collect_subdirs, read_inventory};
+use crate::validator::{collect_subdirs, read_inventory};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -45,9 +42,8 @@ pub fn typecheck_tree(root: &Path) -> Vec<TypeError> {
 
 pub fn typecheck_file(sf: &SourceFile, path: &str) -> Vec<TypeError> {
     let mut errors = Vec::new();
-    for bullet in &sf.bullets {
-        // No env context in single-file mode
-        errors.extend(check_bullet(bullet, path, &TypeEnv::new(), true));
+    for func in &sf.bullets {
+        errors.extend(check_function(func, path, &TypeEnv::new(), true));
     }
     errors
 }
@@ -62,7 +58,6 @@ fn check_folder(dir: &Path, errors: &mut Vec<TypeError>) -> TypeEnv {
 
     let mut env = TypeEnv::new();
 
-    // War: only recurse, no source files
     if inv.rank == Rank::War {
         for subdir in collect_subdirs(dir) {
             env.extend(check_folder(&subdir, errors));
@@ -70,18 +65,16 @@ fn check_folder(dir: &Path, errors: &mut Vec<TypeError>) -> TypeEnv {
         return env;
     }
 
-    // Recurse into sub-folders first (bottom-up)
     if inv.rank.has_sub_folders() {
         for subdir in collect_subdirs(dir) {
             env.extend(check_folder(&subdir, errors));
         }
     }
 
-    // Type-check each source file listed in inventory
     let is_skirmish = inv.rank == Rank::Skirmish;
     for entry in &inv.entries {
-        let bu_path = dir.join(format!("{}.bu", entry.file));
-        let file_env = check_bu_file(&bu_path, &env, is_skirmish, errors);
+        let bu_path  = dir.join(format!("{}.bu", entry.file));
+        let file_env = check_source_file(&bu_path, &env, is_skirmish, errors);
         env.extend(file_env);
     }
 
@@ -90,73 +83,72 @@ fn check_folder(dir: &Path, errors: &mut Vec<TypeError>) -> TypeEnv {
 
 // ── File-level type checking ──────────────────────────────────────────────────
 
-fn check_bu_file(
+fn check_source_file(
     path:        &Path,
     env:         &TypeEnv,
     is_skirmish: bool,
     errors:      &mut Vec<TypeError>,
 ) -> TypeEnv {
-    let mut exported_env = TypeEnv::new();
+    let mut file_env = TypeEnv::new();
 
     let source = match fs::read_to_string(path) {
         Ok(s)  => s,
-        Err(_) => return exported_env,
+        Err(_) => return file_env,
     };
 
     let sf = match parser::parse_file(&source, false) {
         Ok(BuFile::Source(s)) => s,
-        _                     => return exported_env,
+        _                     => return file_env,
     };
 
     let path_str = path.display().to_string();
 
-    for bullet in &sf.bullets {
-        errors.extend(check_bullet(bullet, &path_str, env, is_skirmish));
-
-        // All bullets are always public — register all of them
-        exported_env.insert(bullet.name.clone(), BulletSig {
-            params:  bullet.params.iter().map(|p| p.ty.clone()).collect(),
-            returns: bullet.output.ty.clone(),
+    for func in &sf.bullets {
+        errors.extend(check_function(func, &path_str, env, is_skirmish));
+        file_env.insert(func.name.clone(), BulletSig {
+            params:  func.params.iter().map(|p| p.ty.clone()).collect(),
+            returns: func.output.ty.clone(),
         });
     }
 
-    exported_env
+    file_env
 }
 
-// ── Bullet-level type checking ────────────────────────────────────────────────
+// ── Function-level type checking ──────────────────────────────────────────────
 
-fn check_bullet(
-    bullet:      &Bullet,
+fn check_function(
+    func:        &Bullet,
     path:        &str,
     env:         &TypeEnv,
     is_skirmish: bool,
 ) -> Vec<TypeError> {
-    let pipes = match &bullet.body {
+    let bullets = match &func.body {
         BulletBody::Native { .. } => return vec![],
         BulletBody::Pipes(p)      => p,
     };
 
     let mut errors = Vec::new();
-    let mut local: HashMap<String, BuType> = bullet.params.iter()
+    let mut local: HashMap<String, BuType> = func.params.iter()
         .map(|p| (p.name.clone(), p.ty.clone()))
         .collect();
 
-    let last = pipes.len().saturating_sub(1);
+    let last = bullets.len().saturating_sub(1);
 
-    for (i, pipe) in pipes.iter().enumerate() {
+    for (i, bullet) in bullets.iter().enumerate() {
         let expr_type = infer_expr(
-            &pipe.expr, &local, env, is_skirmish,
-            &bullet.name, path, pipe.span, &mut errors,
+            &bullet.expr, &local, env, is_skirmish,
+            &func.name, path, bullet.span, &mut errors,
         );
 
-        if i == last && !types_compatible(&expr_type, &bullet.output.ty) {
-            errors.push(terr(path, pipe.span, format!(
-                "bullet '{}': last pipe produces {} but declared output is {}",
-                bullet.name, expr_type.to_rust(), bullet.output.ty.to_rust()
+        // Last bullet: inferred type must match declared output type
+        if i == last && !types_compatible(&expr_type, &func.output.ty) {
+            errors.push(terr(path, bullet.span, format!(
+                "Function '{}': last bullet produces {} but declared output is {}.",
+                func.name, expr_type.to_rust(), func.output.ty.to_rust()
             )));
         }
 
-        local.insert(pipe.binding.clone(), expr_type);
+        local.insert(bullet.binding.clone(), expr_type);
     }
 
     errors
@@ -169,32 +161,33 @@ fn infer_expr(
     local:       &HashMap<String, BuType>,
     env:         &TypeEnv,
     is_skirmish: bool,
-    bullet_name: &str,
+    func_name:   &str,
     path:        &str,
     span:        Span,
     errors:      &mut Vec<TypeError>,
 ) -> BuType {
     match expr {
-        Expr::Atom(a) => infer_atom(a, local, env, is_skirmish, bullet_name, path, span, errors),
+        Expr::Atom(a) => infer_atom(a, local, env, is_skirmish, func_name, path, span, errors),
 
         Expr::BinOp(b) => {
-            let lhs_ty = infer_atom(&b.lhs, local, env, is_skirmish, bullet_name, path, span, errors);
-            let rhs_ty = infer_atom(&b.rhs, local, env, is_skirmish, bullet_name, path, span, errors);
+            let lhs_ty = infer_atom(&b.lhs, local, env, is_skirmish, func_name, path, span, errors);
+            let rhs_ty = infer_atom(&b.rhs, local, env, is_skirmish, func_name, path, span, errors);
 
             if lhs_ty == BuType::Unknown || rhs_ty == BuType::Unknown {
                 return BuType::Unknown;
             }
             if lhs_ty != rhs_ty {
                 errors.push(terr(path, span, format!(
-                    "bullet '{}': binary '{}' has mismatched types: left is {}, right is {}",
-                    bullet_name, b.op, lhs_ty.to_rust(), rhs_ty.to_rust()
+                    "Function '{}': operator '{}' requires both sides to be the same type \
+                     (left: {}, right: {}).",
+                    func_name, b.op, lhs_ty.to_rust(), rhs_ty.to_rust()
                 )));
                 return BuType::Unknown;
             }
             if !lhs_ty.is_numeric() {
                 errors.push(terr(path, span, format!(
-                    "bullet '{}': binary '{}' requires numeric types, got {}",
-                    bullet_name, b.op, lhs_ty.to_rust()
+                    "Function '{}': operator '{}' requires a numeric type, got {}.",
+                    func_name, b.op, lhs_ty.to_rust()
                 )));
                 return BuType::Unknown;
             }
@@ -203,7 +196,7 @@ fn infer_expr(
 
         Expr::Tuple(exprs) => {
             BuType::Tuple(exprs.iter().map(|e| {
-                infer_expr(e, local, env, is_skirmish, bullet_name, path, span, errors)
+                infer_expr(e, local, env, is_skirmish, func_name, path, span, errors)
             }).collect())
         }
     }
@@ -214,7 +207,7 @@ fn infer_atom(
     local:       &HashMap<String, BuType>,
     env:         &TypeEnv,
     is_skirmish: bool,
-    bullet_name: &str,
+    func_name:   &str,
     path:        &str,
     span:        Span,
     errors:      &mut Vec<TypeError>,
@@ -233,8 +226,8 @@ fn infer_atom(
 
             if args.len() != sig.params.len() {
                 errors.push(terr(path, span, format!(
-                    "bullet '{}': '{}' expects {} argument(s), got {}",
-                    bullet_name, name, sig.params.len(), args.len()
+                    "Function '{}': '{}' expects {} argument(s) but received {}.",
+                    func_name, name, sig.params.len(), args.len()
                 )));
                 return sig.returns.clone();
             }
@@ -245,8 +238,8 @@ fn infer_atom(
                         let actual_ty = local.get(v).cloned().unwrap_or(BuType::Unknown);
                         if actual_ty != BuType::Unknown && !types_compatible(&actual_ty, expected_ty) {
                             errors.push(terr(path, span, format!(
-                                "bullet '{}': argument {} to '{}' is {} but expected {}",
-                                bullet_name, i + 1, name,
+                                "Function '{}': argument {} passed to '{}' is {} but {} was expected.",
+                                func_name, i + 1, name,
                                 actual_ty.to_rust(), expected_ty.to_rust()
                             )));
                         }
@@ -256,8 +249,10 @@ fn infer_atom(
                         let fn_ty   = build_fn_type(ref_sig);
                         if !types_compatible(&fn_ty, expected_ty) {
                             errors.push(terr(path, span, format!(
-                                "bullet '{}': '&{}' has type {} but parameter {} of '{}' expects {}",
-                                bullet_name, r, fn_ty.to_rust(), i + 1, name, expected_ty.to_rust()
+                                "Function '{}': '&{}' has type {} but argument {} of '{}' expects {}.",
+                                func_name, r,
+                                fn_ty.to_rust(), i + 1, name,
+                                expected_ty.to_rust()
                             )));
                         }
                     }
