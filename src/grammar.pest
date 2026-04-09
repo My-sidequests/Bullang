@@ -10,10 +10,11 @@ integer = @{ "-"? ~ ASCII_DIGIT+ }
 ty_generic_args = { "<" ~ ty ~ ("," ~ ty)* ~ ">" }
 ty_atom         = { ident ~ ty_generic_args? }
 ty_tuple        = { "(" ~ ty ~ ("," ~ ty)+ ~ ")" }
+ty_unit         = { "(" ~ ")" }
 ty_array        = { "[" ~ ty ~ ";" ~ integer ~ "]" }
 ty_fn_params    = { "(" ~ (ty ~ ("," ~ ty)*)? ~ ")" }
 ty_fn           = { "fn" ~ ty_fn_params ~ ("->" ~ ty)? }
-ty              = { ty_tuple | ty_array | ty_fn | ty_atom }
+ty              = { ty_unit | ty_tuple | ty_array | ty_fn | ty_atom }
 
 // ── Binding  {name} ───────────────────────────────────────────────────────────
 binding = { "{" ~ ident ~ "}" }
@@ -55,7 +56,6 @@ bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 source_file = { SOI ~ bullet+ ~ EOI }
 
 // ── Inventory file ────────────────────────────────────────────────────────────
-// One line per source file: filename : fn1, fn2, fn3;
 rank_val   = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
 dir_rank   = { "#rank" ~ ":" ~ rank_val ~ ";" }
 inv_entry  = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }

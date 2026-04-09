@@ -8,11 +8,60 @@ pub fn emit_source(file: &SourceFile) -> String {
     let mut out = String::new();
     out.push_str("#[allow(unused_imports)]\n");
     out.push_str("use crate::*;\n\n");
-    for bullet in &file.bullets {
-        out.push_str(&emit_bullet(bullet));
+    for func in &file.bullets {
+        out.push_str(&emit_function(func, false));
         out.push('\n');
     }
     out
+}
+
+// ── main.bu → main.rs ─────────────────────────────────────────────────────────
+
+/// Emits src/main.rs from the parsed main.bu.
+/// The main function gets `fn main()` — no pub, no return type.
+/// All other functions in main.bu (helpers) get `fn` but not `pub`.
+pub fn emit_main(file: &SourceFile, crate_name: &str) -> String {
+    let mut out = String::new();
+
+    // Import the library crate so all transpiled functions are in scope
+    out.push_str(&format!("use {}::*;\n\n", crate_name));
+
+    for func in &file.bullets {
+        if func.name == "main" {
+            out.push_str(&emit_main_function(func));
+        } else {
+            out.push_str(&emit_function(func, false));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Emits Cargo.toml with both a [[bin]] and [lib] section when main.rs exists.
+pub fn emit_cargo_toml_with_main(crate_name: &str) -> String {
+    format!(
+        "[package]\n\
+         name    = \"{name}\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2021\"\n\n\
+         [[bin]]\n\
+         name = \"{name}\"\n\
+         path = \"src/main.rs\"\n\n\
+         [lib]\n\
+         name = \"{name}\"\n\
+         path = \"src/lib.rs\"\n\n\
+         [dependencies]\n",
+        name = crate_name
+    )
+}
+
+/// Emits Cargo.toml as a library-only crate (no main.bu present).
+pub fn emit_cargo_toml(crate_name: &str) -> String {
+    format!(
+        "[package]\nname    = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        crate_name
+    )
 }
 
 // ── Module files ──────────────────────────────────────────────────────────────
@@ -46,34 +95,45 @@ pub fn emit_lib_rs(child_modules: &[String]) -> String {
     out
 }
 
-pub fn emit_cargo_toml(crate_name: &str) -> String {
-    format!(
-        "[package]\nname    = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
-        crate_name
-    )
-}
+// ── Function emitters ─────────────────────────────────────────────────────────
 
-// ── Bullet → Rust function ────────────────────────────────────────────────────
-
-fn emit_bullet(bullet: &Bullet) -> String {
+/// Emit a regular function. All are `pub` since there is no private code in Bullang.
+fn emit_function(func: &Bullet, _is_main: bool) -> String {
     let mut out = String::new();
 
-    let params = bullet.params.iter()
+    let params = func.params.iter()
         .map(|p| format!("{}: {}", p.name, p.ty.to_rust()))
         .collect::<Vec<_>>().join(", ");
-    let ret_ty = bullet.output.ty.to_rust();
+    let ret_ty = func.output.ty.to_rust();
 
-    // All bullets are always public
-    out.push_str(&format!("pub fn {}({}) -> {} {{\n", bullet.name, params, ret_ty));
+    out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
+    emit_body(&mut out, &func.body);
+    out.push_str("}\n");
+    out
+}
 
-    match &bullet.body {
+/// Emit the `main` function: no pub, no return type annotation.
+fn emit_main_function(func: &Bullet) -> String {
+    let mut out = String::new();
+
+    // main() takes no arguments in Rust
+    out.push_str("fn main() {\n");
+    emit_body(&mut out, &func.body);
+    out.push_str("}\n");
+    out
+}
+
+fn emit_body(out: &mut String, body: &BulletBody) {
+    match body {
         BulletBody::Pipes(pipes) => {
             let last = pipes.len().saturating_sub(1);
             for (i, pipe) in pipes.iter().enumerate() {
                 let expr_str = emit_expr(&pipe.expr);
                 if i == last {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
-                    out.push_str(&format!("    {}\n", pipe.binding));
+                    // Don't emit return for () type — it's implicit
+                    let binding = &pipe.binding;
+                    out.push_str(&format!("    {}\n", binding));
                 } else {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
                 }
@@ -86,9 +146,6 @@ fn emit_bullet(bullet: &Bullet) -> String {
             }
         }
     }
-
-    out.push_str("}\n");
-    out
 }
 
 // ── Expression emitters ───────────────────────────────────────────────────────

@@ -1,4 +1,7 @@
 //! Compile-time structural validation.
+//!
+//! Reserved filenames (excluded from inventory): inventory.bu, main.bu
+//! main.bu is allowed at any rank except skirmish.
 
 use std::path::{Path, PathBuf};
 use std::collections::{HashSet, HashMap};
@@ -55,7 +58,8 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
     };
 
     let subdirs  = collect_subdirs(dir);
-    let bu_files = collect_bu_files(dir);
+    let bu_files = collect_bu_files(dir);    // excludes inventory.bu AND main.bu
+    let main_path = main_bu_path(dir);
 
     // Recurse into sub-folders first (bottom-up)
     for subdir in &subdirs {
@@ -63,7 +67,7 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
     }
 
     match inv.rank {
-        // ── War: only sub-folders, no source files ────────────────────────────
+        // ── War: sub-folders only + optional main.bu ──────────────────────────
         Rank::War => {
             if !bu_files.is_empty() {
                 errors.push(err(dir, format!(
@@ -87,9 +91,14 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
             for subdir in &subdirs {
                 validate_child_rank(subdir, &Rank::Theater, &mut errors);
             }
+            // Validate main.bu if present
+            if let Some(ref mp) = main_path {
+                let child_callable = collect_child_callable(&subdirs);
+                errors.extend(validate_main_file(mp, &child_callable));
+            }
         }
 
-        // ── Skirmish: only source files, no sub-folders ───────────────────────
+        // ── Skirmish: source files only, no main.bu allowed ───────────────────
         Rank::Skirmish => {
             if !subdirs.is_empty() {
                 errors.push(err(dir, format!(
@@ -103,6 +112,13 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
                     bu_files.len()
                 )));
             }
+            if main_path.is_some() {
+                errors.push(err(
+                    &dir.join("main.bu"),
+                    "Skirmish folders cannot contain main.bu. \
+                     Move your entry point to a tactic or higher rank folder."
+                ));
+            }
             errors.extend(validate_inventory_completeness(dir, &inv, &bu_files, &[]));
             let inv_map = build_inv_map(&inv);
             for bu in &bu_files {
@@ -110,7 +126,7 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
             }
         }
 
-        // ── Middle ranks ──────────────────────────────────────────────────────
+        // ── Middle ranks: sub-folders + source files + optional main.bu ───────
         ref rank => {
             let child_rank = rank.child_rank().unwrap();
 
@@ -130,10 +146,15 @@ fn validate_folder(dir: &Path) -> Vec<ValidationError> {
                 validate_child_rank(subdir, &child_rank, &mut errors);
             }
             errors.extend(validate_inventory_completeness(dir, &inv, &bu_files, &subdirs));
+
             let child_callable = collect_child_callable(&subdirs);
             let inv_map = build_inv_map(&inv);
             for bu in &bu_files {
                 errors.extend(validate_source_file(bu, rank, &inv_map, &child_callable));
+            }
+            // Validate main.bu if present
+            if let Some(ref mp) = main_path {
+                errors.extend(validate_main_file(mp, &child_callable));
             }
         }
     }
@@ -160,7 +181,46 @@ fn validate_child_rank(subdir: &Path, expected: &Rank, errors: &mut Vec<Validati
     }
 }
 
-// ── Inventory completeness validation ─────────────────────────────────────────
+// ── main.bu validation ────────────────────────────────────────────────────────
+
+/// Validate main.bu — same rules as a source file, but:
+///   - the `main` function may have no params and return ()
+///   - not subject to inventory listing
+fn validate_main_file(
+    path:     &Path,
+    callable: &HashSet<String>,
+) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+
+    let source = match fs::read_to_string(path) {
+        Ok(s)  => s,
+        Err(e) => { errors.push(err(path, format!("Could not read main.bu: {}", e))); return errors; }
+    };
+
+    let sf = match parser::parse_file(&source, false) {
+        Ok(BuFile::Source(s))    => s,
+        Ok(BuFile::Inventory(_)) => return errors,
+        Err(e) => { errors.push(err(path, format!("Parse error in main.bu: {}", e))); return errors; }
+    };
+
+    let path_str = path.display().to_string();
+
+    if sf.bullets.len() > 5 {
+        errors.push(ferr(&path_str, format!(
+            "main.bu cannot contain more than 5 functions (found {}).",
+            sf.bullets.len()
+        )));
+    }
+
+    // main.bu can call anything in the child callable set — it is never skirmish-restricted
+    for func in &sf.bullets {
+        errors.extend(validate_function(func, &path_str, callable, false));
+    }
+
+    errors
+}
+
+// ── Inventory completeness validation ────────────────────────────────────────
 
 fn build_inv_map(inv: &InventoryFile) -> HashMap<String, Vec<String>> {
     inv.entries.iter()
@@ -251,7 +311,7 @@ fn validate_inventory_completeness(
 fn validate_source_file(
     path:           &Path,
     folder_rank:    &Rank,
-    inv_map:        &HashMap<String, Vec<String>>,
+    _inv_map:       &HashMap<String, Vec<String>>,
     child_callable: &HashSet<String>,
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
@@ -267,8 +327,8 @@ fn validate_source_file(
         Err(e) => { errors.push(err(path, format!("Parse error: {}", e))); return errors; }
     };
 
-    let path_str = path.display().to_string();
-    let _ = inv_map;
+    let path_str    = path.display().to_string();
+    let is_skirmish = folder_rank == &Rank::Skirmish;
 
     if sf.bullets.len() > 5 {
         errors.push(ferr(&path_str, format!(
@@ -277,15 +337,14 @@ fn validate_source_file(
         )));
     }
 
-    let is_skirmish = folder_rank == &Rank::Skirmish;
-    for bullet in &sf.bullets {
-        errors.extend(validate_function(bullet, &path_str, child_callable, is_skirmish));
+    for func in &sf.bullets {
+        errors.extend(validate_function(func, &path_str, child_callable, is_skirmish));
     }
 
     errors
 }
 
-// ── Function (bullet) validation ──────────────────────────────────────────────
+// ── Function / bullet validation ──────────────────────────────────────────────
 
 fn validate_function(
     func:        &Bullet,
@@ -301,8 +360,6 @@ fn validate_function(
         ),
     }
 }
-
-// ── Bullet (pipe) validation ──────────────────────────────────────────────────
 
 fn validate_bullets(
     bullets:     &[Pipe],
@@ -328,7 +385,6 @@ fn validate_bullets(
     let last = bullets.len().saturating_sub(1);
 
     for (i, bullet) in bullets.iter().enumerate() {
-        // Validate inputs
         for input in &bullet.inputs {
             if param_names.contains(input.as_str()) {
                 consumed.insert(input.clone());
@@ -342,13 +398,11 @@ fn validate_bullets(
             }
         }
 
-        // Validate calls inside expression
         collect_call_errors(
             &bullet.expr, func_name, path, bullet.span,
             callable, is_skirmish, &mut errors,
         );
 
-        // No rebinding
         if bound.contains(&bullet.binding) {
             errors.push(serr(path, bullet.span, format!(
                 "Function '{}': '{{{}}}' is assigned more than once.",
@@ -356,7 +410,6 @@ fn validate_bullets(
             )));
         }
 
-        // Last bullet must bind to declared output name
         if i == last && bullet.binding != output_name {
             errors.push(serr(path, bullet.span, format!(
                 "Function '{}': last bullet output '{{{}}}' must match function output '{{{}}}'.",
@@ -367,7 +420,6 @@ fn validate_bullets(
         bound.insert(bullet.binding.clone());
     }
 
-    // Dead binding check
     for b in &bound {
         if b != output_name && !consumed.contains(b) {
             errors.push(ferr(path, format!(
@@ -456,19 +508,6 @@ pub fn collect_child_callable(subdirs: &[PathBuf]) -> HashSet<String> {
     names
 }
 
-pub fn collect_folder_callable(dir: &Path) -> HashSet<String> {
-    let mut names = HashSet::new();
-    if let Ok(inv) = read_inventory(dir) {
-        for entry in &inv.entries {
-            for func in &entry.functions { names.insert(func.clone()); }
-        }
-    }
-    for subdir in collect_subdirs(dir) {
-        names.extend(collect_folder_callable(&subdir));
-    }
-    names
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub fn read_inventory(dir: &Path) -> Result<InventoryFile, String> {
@@ -489,6 +528,13 @@ pub fn read_folder_rank(dir: &Path) -> Option<Rank> {
     read_inventory(dir).ok().map(|inv| inv.rank)
 }
 
+/// Returns the path to main.bu in this directory, if it exists.
+pub fn main_bu_path(dir: &Path) -> Option<PathBuf> {
+    let p = dir.join("main.bu");
+    if p.exists() { Some(p) } else { None }
+}
+
+/// Collect all .bu files, excluding inventory.bu AND main.bu.
 pub fn collect_bu_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .into_iter().flatten().flatten().map(|e| e.path())
@@ -496,7 +542,8 @@ pub fn collect_bu_files(dir: &Path) -> Vec<PathBuf> {
             p.is_file()
                 && p.extension().map(|x| x == "bu").unwrap_or(false)
                 && p.file_name().and_then(|n| n.to_str())
-                    .map(|n| n != "inventory.bu").unwrap_or(false)
+                    .map(|n| n != "inventory.bu" && n != "main.bu")
+                    .unwrap_or(false)
         })
         .collect();
     files.sort();

@@ -50,8 +50,8 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
                 rank = Rank::from_str(inner.into_inner().next().unwrap().as_str());
             }
             Rule::inv_entry => {
-                let mut ci   = inner.into_inner();
-                let file     = ci.next().unwrap().as_str().to_string();
+                let mut ci    = inner.into_inner();
+                let file      = ci.next().unwrap().as_str().to_string();
                 let functions = ci.map(|p| p.as_str().to_string()).collect();
                 entries.push(InventoryEntry { file, functions });
             }
@@ -183,6 +183,8 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
 fn parse_ty(pair: Pair<Rule>) -> BuType {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        // () — the unit type
+        Rule::ty_unit  => BuType::Named("()".to_string()),
         Rule::ty_tuple => BuType::Tuple(inner.into_inner().map(parse_ty).collect()),
         Rule::ty_array => {
             let mut ai      = inner.into_inner();
