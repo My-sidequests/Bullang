@@ -7,10 +7,12 @@ ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 integer = @{ "-"? ~ ASCII_DIGIT+ }
 
 // ── Type system (Rust passthrough) ────────────────────────────────────────────
+// ty_unit MUST come before ty_tuple — both start with "(" and Pest is greedy.
+// ty_unit matches exactly "()" while ty_tuple requires two or more inner types.
+ty_unit         = { "(" ~ ")" }
+ty_tuple        = { "(" ~ ty ~ ("," ~ ty)+ ~ ")" }
 ty_generic_args = { "<" ~ ty ~ ("," ~ ty)* ~ ">" }
 ty_atom         = { ident ~ ty_generic_args? }
-ty_tuple        = { "(" ~ ty ~ ("," ~ ty)+ ~ ")" }
-ty_unit         = { "(" ~ ")" }
 ty_array        = { "[" ~ ty ~ ";" ~ integer ~ "]" }
 ty_fn_params    = { "(" ~ (ty ~ ("," ~ ty)*)? ~ ")" }
 ty_fn           = { "fn" ~ ty_fn_params ~ ("->" ~ ty)? }
@@ -56,7 +58,7 @@ bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 source_file = { SOI ~ bullet+ ~ EOI }
 
 // ── Inventory file ────────────────────────────────────────────────────────────
-rank_val   = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
-dir_rank   = { "#rank" ~ ":" ~ rank_val ~ ";" }
-inv_entry  = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
+rank_val       = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
+dir_rank       = { "#rank" ~ ":" ~ rank_val ~ ";" }
+inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
 inventory_file = { SOI ~ dir_rank ~ inv_entry* ~ EOI }
