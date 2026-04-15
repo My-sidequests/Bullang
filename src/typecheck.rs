@@ -123,8 +123,9 @@ fn check_function(
     is_skirmish: bool,
 ) -> Vec<TypeError> {
     let bullets = match &func.body {
-        BulletBody::Native { .. } => return vec![],
-        BulletBody::Pipes(p)      => p,
+        BulletBody::Native { .. }  => return vec![],
+        BulletBody::Builtin(_)     => return vec![], // stdlib owns the type contract
+        BulletBody::Pipes(p)       => p,
     };
 
     let mut errors = Vec::new();

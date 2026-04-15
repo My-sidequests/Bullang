@@ -5,8 +5,39 @@ use crate::ast::*;
 #[grammar = "grammar.pest"]
 pub struct BulParser;
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Parse error type ──────────────────────────────────────────────────────────
 
+/// A parse error with file path, line, col and message.
+/// Separate from ValidationError so the display layer can format them
+/// consistently alongside structural/type errors.
+#[derive(Debug)]
+pub struct ParseError {
+    pub file:    String,
+    pub line:    usize,
+    pub col:     usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.line > 0 {
+            write!(f, "[{}:{}:{}] {}", self.file, self.line, self.col, self.message)
+        } else {
+            write!(f, "[{}] {}", self.file, self.message)
+        }
+    }
+}
+
+/// Result of a tolerant parse: successfully parsed bullets + any parse errors.
+pub struct ParseResult {
+    pub file:   BuFile,
+    pub errors: Vec<ParseError>,
+}
+
+// ── Public entry points ───────────────────────────────────────────────────────
+
+/// Strict parse — used for inventory files where there is no meaningful
+/// way to recover from a broken #rank or entry line.
 pub fn parse_file(
     source:       &str,
     is_inventory: bool,
@@ -19,6 +50,163 @@ pub fn parse_file(
         let mut pairs = BulParser::parse(Rule::source_file, source)?;
         Ok(BuFile::Source(parse_source(pairs.next().unwrap())))
     }
+}
+
+/// Tolerant parse for source files.
+///
+/// Splits the source into individual `let …` function chunks by scanning
+/// for top-level `let` keywords. Each chunk is parsed independently so
+/// one broken function does not prevent the others from being validated.
+///
+/// Returns a ParseResult containing:
+///   - every bullet that parsed successfully (possibly empty)
+///   - every parse error encountered (possibly empty)
+pub fn parse_file_tolerant(source: &str, file_path: &str) -> ParseResult {
+    use pest::Parser;
+
+    // Fast path: try a strict parse first. If it succeeds there is nothing
+    // to recover from and we avoid the extra work of splitting.
+    if let Ok(mut pairs) = BulParser::parse(Rule::source_file, source) {
+        return ParseResult {
+            file:   BuFile::Source(parse_source(pairs.next().unwrap())),
+            errors: vec![],
+        };
+    }
+
+    // Recovery path: split at top-level `let` boundaries and parse each
+    // function independently.
+    let chunks = split_into_function_chunks(source);
+    let mut bullets = Vec::new();
+    let mut errors  = Vec::new();
+
+    for (chunk_src, line_offset) in chunks {
+        match BulParser::parse(Rule::source_file, &chunk_src) {
+            Ok(mut pairs) => {
+                let sf = parse_source(pairs.next().unwrap());
+                bullets.extend(sf.bullets);
+            }
+            Err(e) => {
+                // Adjust line numbers by the chunk's offset in the original file
+                let (line, col) = pest_error_location(&e);
+                let adjusted_line = line + line_offset.saturating_sub(1);
+                errors.push(ParseError {
+                    file:    file_path.to_string(),
+                    line:    adjusted_line,
+                    col,
+                    message: pest_error_message(&e),
+                });
+            }
+        }
+    }
+
+    ParseResult {
+        file:   BuFile::Source(SourceFile { bullets }),
+        errors,
+    }
+}
+
+// ── Function chunk splitter ───────────────────────────────────────────────────
+
+/// Split a source file into individual `let` function chunks.
+///
+/// Each chunk is a complete `let name(...) -> ... { ... }` block.
+/// We scan line by line looking for lines that start with `let ` (after
+/// trimming whitespace) — these mark the start of a new function.
+/// The chunk text for each function runs from its `let` line up to
+/// (but not including) the next `let` line.
+///
+/// Returns Vec<(chunk_source, start_line_number_1indexed)>.
+fn split_into_function_chunks(source: &str) -> Vec<(String, usize)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunk_starts: Vec<usize> = Vec::new(); // 0-indexed line numbers
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("let ") || trimmed == "let" {
+            chunk_starts.push(i);
+        }
+    }
+
+    if chunk_starts.is_empty() {
+        // No `let` found at all — return the whole source as one chunk
+        // so the error message points to the actual problem.
+        return vec![(source.to_string(), 1)];
+    }
+
+    let mut chunks = Vec::new();
+    for (idx, &start) in chunk_starts.iter().enumerate() {
+        let end = if idx + 1 < chunk_starts.len() {
+            chunk_starts[idx + 1]
+        } else {
+            lines.len()
+        };
+
+        let chunk_lines = &lines[start..end];
+        let chunk_src   = chunk_lines.join("\n");
+        // line_offset is 1-indexed for error reporting
+        chunks.push((chunk_src, start + 1));
+    }
+
+    chunks
+}
+
+// ── Pest error helpers ────────────────────────────────────────────────────────
+
+fn pest_error_location(e: &pest::error::Error<Rule>) -> (usize, usize) {
+    match e.line_col {
+        pest::error::LineColLocation::Pos((line, col)) => (line, col),
+        pest::error::LineColLocation::Span((line, col), _) => (line, col),
+    }
+}
+
+fn pest_error_message(e: &pest::error::Error<Rule>) -> String {
+    // Pest error Display includes the full source snippet — we just want
+    // the description line.
+    let full = format!("{}", e);
+    full.lines()
+        .find(|l| l.trim_start().starts_with('='))
+        .map(|l| l.trim_start_matches(|c| c == '=' || c == ' ').to_string())
+        .unwrap_or_else(|| "Syntax error".to_string())
+}
+
+// ── Block indent normalisation ───────────────────────────────────────────────
+
+/// Strip common leading whitespace from a native block body.
+///
+/// When a developer writes:
+///   @rust
+///       values.iter().sum()
+///   @end
+///
+/// The captured string is "\n    values.iter().sum()\n    " (4 spaces each line).
+/// We strip those 4 spaces so the emitted code is just "values.iter().sum()".
+/// The code generator then adds back exactly 4 spaces for function-body indentation.
+fn normalise_block_indent(raw: &str) -> String {
+    let lines: Vec<&str> = raw.split('\n').collect();
+
+    // Find minimum indentation across all non-empty lines
+    let min_indent = lines.iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches(' ').len()) // only strip spaces, not tabs
+        .min()
+        .unwrap_or(0);
+
+    // Strip exactly min_indent leading spaces from each line
+    lines.iter()
+        .map(|l| {
+            if l.trim().is_empty() {
+                String::new()
+            } else if l.len() >= min_indent {
+                l[min_indent..].to_string()
+            } else {
+                l.trim_start().to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        // Trim a single leading/trailing newline that comes from the block delimiters
+        .trim_matches('\n')
+        .to_string()
 }
 
 // ── Span extraction ───────────────────────────────────────────────────────────
@@ -42,12 +230,17 @@ fn parse_source(pair: Pair<Rule>) -> SourceFile {
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     let mut rank    = None;
+    let mut libs    = Vec::new();
     let mut entries = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::dir_rank => {
                 rank = Rank::from_str(inner.into_inner().next().unwrap().as_str());
+            }
+            Rule::dir_lib => {
+                let name = inner.into_inner().next().unwrap().as_str().trim().to_string();
+                libs.push(name);
             }
             Rule::inv_entry => {
                 let mut ci    = inner.into_inner();
@@ -62,6 +255,7 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
 
     InventoryFile {
         rank:    rank.expect("inventory.bu is missing #rank"),
+        libs,
         entries,
     }
 }
@@ -104,10 +298,44 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
     if children.is_empty() { panic!("bullet body is empty"); }
 
     match children[0].as_rule() {
-        Rule::rust_block => {
-            let code = children[0].clone().into_inner()
+        Rule::native_block => {
+            // The entire block is one atomic string: "@rust\n    code\n    @end"
+            // We split it manually to extract (backend_name, code).
+            let raw = children[0].as_str(); // e.g. "@rust\n    code\n    @end"
+
+            // Strip the leading "@"
+            let raw = &raw[1..];
+
+            // Extract backend name: everything up to the first whitespace char
+            let name_end = raw.find(|c: char| c.is_whitespace()).unwrap_or(raw.len());
+            let backend_str = &raw[..name_end];
+
+            // Extract code: everything after backend name up to (but not including) "@end"
+            // The content starts after the first newline following the backend name
+            let after_name = &raw[name_end..];
+            let code_end   = after_name.rfind("@end").unwrap_or(after_name.len());
+            let code_raw   = &after_name[..code_end];
+
+            // Normalise indentation: remove common leading whitespace from all content lines.
+            // This corrects for users who indent their @rust/@python blocks to match
+            // surrounding Bullang source (e.g. 4 spaces inside a bullet body).
+            let code = normalise_block_indent(code_raw);
+
+            let backend = match backend_str {
+                "rust"   => Backend::Rust,
+                "python" => Backend::Python,
+                "c"      => Backend::C,
+                "cpp"    => Backend::Cpp,
+                "go"     => Backend::Go,
+                other    => Backend::Unknown(other.to_string()),
+            };
+            BulletBody::Native { backend, code }
+        }
+        Rule::builtin_call => {
+            // builtin::name — the ident after "::" is the builtin name
+            let name = children[0].clone().into_inner()
                 .next().unwrap().as_str().to_string();
-            BulletBody::Native { backend: Backend::Rust, code }
+            BulletBody::Builtin(name)
         }
         Rule::pipe => {
             BulletBody::Pipes(children.into_iter().map(parse_pipe).collect())
@@ -183,7 +411,6 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
 fn parse_ty(pair: Pair<Rule>) -> BuType {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
-        // () — the unit type
         Rule::ty_unit  => BuType::Named("()".to_string()),
         Rule::ty_tuple => BuType::Tuple(inner.into_inner().map(parse_ty).collect()),
         Rule::ty_array => {
@@ -192,8 +419,11 @@ fn parse_ty(pair: Pair<Rule>) -> BuType {
             let size: usize = ai.next().unwrap().as_str().parse().unwrap();
             BuType::Array(Box::new(elem), size)
         }
-        Rule::ty_fn   => BuType::Named(inner.as_str().trim().to_string()),
-        Rule::ty_atom => BuType::Named(inner.as_str().trim().to_string()),
+        Rule::ty_fn      => BuType::Named(inner.as_str().trim().to_string()),
+        // Reference types: captured verbatim as Named — Rust codegen uses them directly.
+        Rule::ty_ref     => BuType::Named(inner.as_str().trim().to_string()),
+        Rule::ty_ref_mut => BuType::Named(inner.as_str().trim().to_string()),
+        Rule::ty_atom    => BuType::Named(inner.as_str().trim().to_string()),
         other => unreachable!("unexpected ty rule: {:?}", other),
     }
 }

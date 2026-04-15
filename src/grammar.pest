@@ -16,7 +16,11 @@ ty_atom         = { ident ~ ty_generic_args? }
 ty_array        = { "[" ~ ty ~ ";" ~ integer ~ "]" }
 ty_fn_params    = { "(" ~ (ty ~ ("," ~ ty)*)? ~ ")" }
 ty_fn           = { "fn" ~ ty_fn_params ~ ("->" ~ ty)? }
-ty              = { ty_unit | ty_tuple | ty_array | ty_fn | ty_atom }
+// Reference types: &T and &mut T — must be tried before ty_atom to avoid
+// consuming & as part of an identifier.
+ty_ref_mut      = { "&" ~ "mut" ~ ty }
+ty_ref          = { "&" ~ ty }
+ty              = { ty_unit | ty_tuple | ty_array | ty_fn | ty_ref_mut | ty_ref | ty_atom }
 
 // ── Binding  {name} ───────────────────────────────────────────────────────────
 binding = { "{" ~ ident ~ "}" }
@@ -39,12 +43,22 @@ input_list = { "(" ~ ident ~ ("," ~ ident)* ~ ")" }
 // ── Pipe statement ────────────────────────────────────────────────────────────
 pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ ";" }
 
-// ── Native backend escape block ───────────────────────────────────────────────
-rust_block_inner = @{ (!"@end" ~ ANY)* }
-rust_block       =  { "@rust" ~ rust_block_inner ~ "@end" }
+// ── Native backend escape block ──────────────────────────────────────────────
+// @<backend> ... @end  — verbatim code for a specific target backend.
+// The backend name is any identifier: rust, python, go, etc.
+// The compiler validates that the backend matches the build target.
+// Native backend escape block.
+// Captured as a single atomic token to preserve all internal whitespace exactly.
+// The parser splits it into (backend_name, code) by finding the first newline.
+// Format:  @rust\n...code...\n    @end
+//   OR:   @python\n...code...\n    @end
+native_block = @{ "@" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ (!"@end" ~ ANY)* ~ "@end" }
 
-// ── Bullet body: pure pipes OR one native block ───────────────────────────────
-bullet_body = { rust_block | pipe+ }
+// builtin::name  — resolved at codegen time from the stdlib table.
+builtin_call = { "builtin" ~ "::" ~ ident }
+
+// ── Bullet body: pure pipes, one native block, or a builtin reference ─────────
+bullet_body = { builtin_call | native_block | pipe+ }
 
 // ── Function signature ────────────────────────────────────────────────────────
 param       = { ident ~ ":" ~ ty }
@@ -60,5 +74,10 @@ source_file = { SOI ~ bullet+ ~ EOI }
 // ── Inventory file ────────────────────────────────────────────────────────────
 rank_val       = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
 dir_rank       = { "#rank" ~ ":" ~ rank_val ~ ";" }
+// #lib: header_name; — declares an external library needed by this folder.
+// For C: becomes #include <header_name> in the generated header.
+// For C++: same. Ignored for Rust and Python.
+lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
+dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
 inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
-inventory_file = { SOI ~ dir_rank ~ inv_entry* ~ EOI }
+inventory_file = { SOI ~ dir_rank ~ dir_lib* ~ inv_entry* ~ EOI }

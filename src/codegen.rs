@@ -1,6 +1,7 @@
 //! Code generation — AST → Rust source.
 
 use crate::ast::*;
+use crate::stdlib;
 
 // ── Source file → Rust ────────────────────────────────────────────────────────
 
@@ -9,7 +10,7 @@ pub fn emit_source(file: &SourceFile) -> String {
     out.push_str("#[allow(unused_imports)]\n");
     out.push_str("use crate::*;\n\n");
     for func in &file.bullets {
-        out.push_str(&emit_function(func, false));
+        out.push_str(&emit_function(func, &Backend::Rust));
         out.push('\n');
     }
     out
@@ -30,7 +31,7 @@ pub fn emit_main(file: &SourceFile, crate_name: &str) -> String {
         if func.name == "main" {
             out.push_str(&emit_main_function(func));
         } else {
-            out.push_str(&emit_function(func, false));
+            out.push_str(&emit_function(func, &Backend::Rust));
         }
         out.push('\n');
     }
@@ -98,7 +99,7 @@ pub fn emit_lib_rs(child_modules: &[String]) -> String {
 // ── Function emitters ─────────────────────────────────────────────────────────
 
 /// Emit a regular function. All are `pub` since there is no private code in Bullang.
-fn emit_function(func: &Bullet, _is_main: bool) -> String {
+fn emit_function(func: &Bullet, backend: &Backend) -> String {
     let mut out = String::new();
 
     let params = func.params.iter()
@@ -107,7 +108,7 @@ fn emit_function(func: &Bullet, _is_main: bool) -> String {
     let ret_ty = func.output.ty.to_rust();
 
     out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
-    emit_body(&mut out, &func.body);
+    emit_body(&mut out, &func.body, &func.params, backend);
     out.push_str("}\n");
     out
 }
@@ -118,12 +119,12 @@ fn emit_main_function(func: &Bullet) -> String {
 
     // main() takes no arguments in Rust
     out.push_str("fn main() {\n");
-    emit_body(&mut out, &func.body);
+    emit_body(&mut out, &func.body, &func.params, &Backend::Rust);
     out.push_str("}\n");
     out
 }
 
-fn emit_body(out: &mut String, body: &BulletBody) {
+fn emit_body(out: &mut String, body: &BulletBody, params: &[Param], backend: &Backend) {
     match body {
         BulletBody::Pipes(pipes) => {
             let last = pipes.len().saturating_sub(1);
@@ -131,7 +132,6 @@ fn emit_body(out: &mut String, body: &BulletBody) {
                 let expr_str = emit_expr(&pipe.expr);
                 if i == last {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
-                    // Don't emit return for () type — it's implicit
                     let binding = &pipe.binding;
                     out.push_str(&format!("    {}\n", binding));
                 } else {
@@ -139,10 +139,26 @@ fn emit_body(out: &mut String, body: &BulletBody) {
                 }
             }
         }
-        BulletBody::Native { code, .. } => {
-            for line in code.lines() {
-                if line.trim().is_empty() { out.push('\n'); }
-                else { out.push_str(&format!("    {}\n", line)); }
+        BulletBody::Native { backend, code } => {
+            match backend {
+                Backend::Unknown(kw) => {
+                    out.push_str(&format!(
+                        "    compile_error!(\"\'@{}\' is not a supported backend\")\n",
+                        kw
+                    ));
+                }
+                _ => {
+                    for line in code.lines() {
+                        if line.trim().is_empty() { out.push('\n'); }
+                        else { out.push_str(&format!("    {}\n", line)); }
+                    }
+                }
+            }
+        }
+        BulletBody::Builtin(name) => {
+            match stdlib::emit_builtin(name, params, backend) {
+                Ok(code) => out.push_str(&format!("    {}\n", code)),
+                Err(e)   => out.push_str(&format!("    compile_error!(\"{}\")\n", e)),
             }
         }
     }

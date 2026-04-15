@@ -17,14 +17,55 @@ impl Span {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Backend {
     Rust,
+    Python,
+    C,
+    Cpp,
+    Go,
+    /// An unrecognised backend name written in an escape block.
+    Unknown(String),
 }
 
 impl Backend {
     pub fn from_ext(ext: &str) -> Option<Self> {
-        match ext { "rs" => Some(Backend::Rust), _ => None }
+        match ext {
+            "rs"  => Some(Backend::Rust),
+            "py"  => Some(Backend::Python),
+            "c"   => Some(Backend::C),
+            "cpp" | "cc" | "cxx" => Some(Backend::Cpp),
+            "go"  => Some(Backend::Go),
+            _     => None,
+        }
     }
-    pub fn name(&self) -> &'static str { match self { Backend::Rust => "rust" } }
-    pub fn ext(&self)  -> &'static str { match self { Backend::Rust => "rs"   } }
+    pub fn name(&self) -> &'static str {
+        match self {
+            Backend::Rust       => "rust",
+            Backend::Python     => "python",
+            Backend::C          => "c",
+            Backend::Cpp        => "cpp",
+            Backend::Go         => "go",
+            Backend::Unknown(_) => "unknown",
+        }
+    }
+    pub fn ext(&self) -> &'static str {
+        match self {
+            Backend::Rust       => "rs",
+            Backend::Python     => "py",
+            Backend::C          => "c",
+            Backend::Cpp        => "cpp",
+            Backend::Go         => "go",
+            Backend::Unknown(_) => "?",
+        }
+    }
+    pub fn escape_keyword(&self) -> String {
+        match self {
+            Backend::Rust        => "rust".to_string(),
+            Backend::Python      => "python".to_string(),
+            Backend::C           => "c".to_string(),
+            Backend::Cpp         => "cpp".to_string(),
+            Backend::Go          => "go".to_string(),
+            Backend::Unknown(s)  => s.clone(),
+        }
+    }
 }
 
 // ── Rank ──────────────────────────────────────────────────────────────────────
@@ -167,8 +208,13 @@ pub struct Pipe {
 
 #[derive(Debug, Clone)]
 pub enum BulletBody {
+    /// Pure Bullang pipe chain.
     Pipes(Vec<Pipe>),
+    /// Verbatim code block for a specific backend (`@rust ... @end`).
     Native { backend: Backend, code: String },
+    /// Reference to a stdlib builtin (`@builtin name`).
+    /// Resolved at codegen time from the backend's stdlib table.
+    Builtin(String),
 }
 
 // ── Output declaration ────────────────────────────────────────────────────────
@@ -220,6 +266,7 @@ pub struct SourceFile {
 #[derive(Debug, Clone)]
 pub struct InventoryFile {
     pub rank:    Rank,
+    pub libs:    Vec<String>,          // #lib: header; declarations (C/C++ only)
     pub entries: Vec<InventoryEntry>,  // one per source file in this folder
 }
 

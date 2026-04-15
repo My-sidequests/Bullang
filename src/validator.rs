@@ -1,15 +1,16 @@
 //! Compile-time structural validation.
 //!
-//! Reserved filenames (excluded from inventory): inventory.bu, main.bu
-//! main.bu is allowed at any rank except skirmish.
+//! Uses tolerant parsing: one broken function does not abort validation
+//! of the rest of the file. All errors across all files are collected
+//! before returning, so the developer sees the full picture in one run.
 
 use std::path::{Path, PathBuf};
 use std::collections::{HashSet, HashMap};
 use std::fs;
 use crate::ast::*;
-use crate::parser;
+use crate::parser::{self, ParseError};
 
-// ── Error type ────────────────────────────────────────────────────────────────
+// ── Error types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct ValidationError {
@@ -29,6 +30,29 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
+/// All errors from one validation run — parse errors and structural errors
+/// kept together so they can be sorted and displayed uniformly.
+#[derive(Debug)]
+pub struct AllErrors {
+    pub parse:      Vec<ParseError>,
+    pub structural: Vec<ValidationError>,
+}
+
+impl AllErrors {
+    fn new() -> Self { Self { parse: vec![], structural: vec![] } }
+    pub fn is_empty(&self) -> bool { self.parse.is_empty() && self.structural.is_empty() }
+    pub fn total(&self) -> usize { self.parse.len() + self.structural.len() }
+
+    fn push_structural(&mut self, e: ValidationError) { self.structural.push(e); }
+    fn push_parse(&mut self, e: ParseError)           { self.parse.push(e); }
+    fn extend_structural(&mut self, es: Vec<ValidationError>) { self.structural.extend(es); }
+    fn extend_parse(&mut self, es: Vec<ParseError>)           { self.parse.extend(es); }
+    fn extend_all(&mut self, other: AllErrors) {
+        self.parse.extend(other.parse);
+        self.structural.extend(other.structural);
+    }
+}
+
 fn err(path: &Path, msg: impl Into<String>) -> ValidationError {
     ValidationError { file: path.display().to_string(), line: 0, col: 0, message: msg.into() }
 }
@@ -43,136 +67,136 @@ fn ferr(file: &str, msg: impl Into<String>) -> ValidationError {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn validate_tree(root: &Path) -> Vec<ValidationError> {
+pub fn validate_tree(root: &Path) -> AllErrors {
     validate_folder(root)
 }
 
 // ── Folder validation (recursive, bottom-up) ─────────────────────────────────
 
-fn validate_folder(dir: &Path) -> Vec<ValidationError> {
-    let mut errors = Vec::new();
+fn validate_folder(dir: &Path) -> AllErrors {
+    let mut all = AllErrors::new();
 
     let inv = match read_inventory(dir) {
         Ok(i)  => i,
-        Err(e) => { errors.push(err(dir, e)); return errors; }
+        Err(e) => {
+            all.push_structural(err(dir, e));
+            return all; // cannot continue without knowing the rank
+        }
     };
 
-    let subdirs  = collect_subdirs(dir);
-    let bu_files = collect_bu_files(dir);    // excludes inventory.bu AND main.bu
+    let subdirs   = collect_subdirs(dir);
+    let bu_files  = collect_bu_files(dir);
     let main_path = main_bu_path(dir);
 
-    // Recurse into sub-folders first (bottom-up)
+    // Recurse into sub-folders first (bottom-up) — always, regardless of other errors
     for subdir in &subdirs {
-        errors.extend(validate_folder(subdir));
+        all.extend_all(validate_folder(subdir));
     }
 
     match inv.rank {
-        // ── War: sub-folders only + optional main.bu ──────────────────────────
+        // ── War ───────────────────────────────────────────────────────────────
         Rank::War => {
             if !bu_files.is_empty() {
-                errors.push(err(dir, format!(
+                all.push_structural(err(dir, format!(
                     "War folder cannot contain source files (found {}). \
                      Consider using a theater rank instead.",
                     bu_files.len()
                 )));
             }
             if subdirs.len() > 5 {
-                errors.push(err(dir, format!(
+                all.push_structural(err(dir, format!(
                     "War folder cannot exceed 5 theaters (found {}).",
                     subdirs.len()
                 )));
             }
             if !inv.entries.is_empty() {
-                errors.push(err(
+                all.push_structural(err(
                     &dir.join("inventory.bu"),
                     "War inventory cannot list any files."
                 ));
             }
             for subdir in &subdirs {
-                validate_child_rank(subdir, &Rank::Theater, &mut errors);
+                validate_child_rank(subdir, &Rank::Theater, &mut all);
             }
-            // Validate main.bu if present
             if let Some(ref mp) = main_path {
                 let child_callable = collect_child_callable(&subdirs);
-                errors.extend(validate_main_file(mp, &child_callable));
+                all.extend_all(validate_main_file(mp, &child_callable));
             }
         }
 
-        // ── Skirmish: source files only, no main.bu allowed ───────────────────
+        // ── Skirmish ──────────────────────────────────────────────────────────
         Rank::Skirmish => {
             if !subdirs.is_empty() {
-                errors.push(err(dir, format!(
+                all.push_structural(err(dir, format!(
                     "Skirmish folder cannot contain sub-folders (found {}).",
                     subdirs.len()
                 )));
             }
             if bu_files.len() > 5 {
-                errors.push(err(dir, format!(
+                all.push_structural(err(dir, format!(
                     "Skirmish folder cannot contain more than 5 source files (found {}).",
                     bu_files.len()
                 )));
             }
             if main_path.is_some() {
-                errors.push(err(
+                all.push_structural(err(
                     &dir.join("main.bu"),
                     "Skirmish folders cannot contain main.bu. \
                      Move your entry point to a tactic or higher rank folder."
                 ));
             }
-            errors.extend(validate_inventory_completeness(dir, &inv, &bu_files, &[]));
+            all.extend_structural(validate_inventory_completeness(dir, &inv, &bu_files, &[]));
             let inv_map = build_inv_map(&inv);
             for bu in &bu_files {
-                errors.extend(validate_source_file(bu, &inv.rank, &inv_map, &HashSet::new()));
+                all.extend_all(validate_source_file(bu, &inv.rank, &inv_map, &HashSet::new()));
             }
         }
 
-        // ── Middle ranks: sub-folders + source files + optional main.bu ───────
+        // ── Middle ranks ──────────────────────────────────────────────────────
         ref rank => {
             let child_rank = rank.child_rank().unwrap();
 
             if subdirs.len() > 5 {
-                errors.push(err(dir, format!(
+                all.push_structural(err(dir, format!(
                     "{} folder cannot contain more than 5 {} sub-folders (found {}).",
                     capitalize(rank.name()), child_rank.name(), subdirs.len()
                 )));
             }
             if bu_files.len() > 5 {
-                errors.push(err(dir, format!(
+                all.push_structural(err(dir, format!(
                     "{} folder cannot contain more than 5 source files (found {}).",
                     capitalize(rank.name()), bu_files.len()
                 )));
             }
             for subdir in &subdirs {
-                validate_child_rank(subdir, &child_rank, &mut errors);
+                validate_child_rank(subdir, &child_rank, &mut all);
             }
-            errors.extend(validate_inventory_completeness(dir, &inv, &bu_files, &subdirs));
-
+            all.extend_structural(validate_inventory_completeness(dir, &inv, &bu_files, &subdirs));
             let child_callable = collect_child_callable(&subdirs);
             let inv_map = build_inv_map(&inv);
             for bu in &bu_files {
-                errors.extend(validate_source_file(bu, rank, &inv_map, &child_callable));
+                all.extend_all(validate_source_file(bu, rank, &inv_map, &child_callable));
             }
-            // Validate main.bu if present
             if let Some(ref mp) = main_path {
-                errors.extend(validate_main_file(mp, &child_callable));
+                all.extend_all(validate_main_file(mp, &child_callable));
             }
         }
     }
 
-    errors
+    all
 }
 
-fn validate_child_rank(subdir: &Path, expected: &Rank, errors: &mut Vec<ValidationError>) {
+fn validate_child_rank(subdir: &Path, expected: &Rank, all: &mut AllErrors) {
     match read_folder_rank(subdir) {
         Some(ref actual) if actual == expected => {}
         Some(ref actual) => {
-            errors.push(err(subdir, format!(
+            all.push_structural(err(subdir, format!(
                 "Found unexpected '{}' in inventory. Consider replacing it with '{}'.",
                 actual.name(), expected.name()
             )));
         }
         None => {
-            errors.push(err(subdir, format!(
+            all.push_structural(err(subdir, format!(
                 "Sub-folder '{}' is missing inventory.bu (expected a {} folder).",
                 subdir.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                 expected.name()
@@ -183,44 +207,37 @@ fn validate_child_rank(subdir: &Path, expected: &Rank, errors: &mut Vec<Validati
 
 // ── main.bu validation ────────────────────────────────────────────────────────
 
-/// Validate main.bu — same rules as a source file, but:
-///   - the `main` function may have no params and return ()
-///   - not subject to inventory listing
-fn validate_main_file(
-    path:     &Path,
-    callable: &HashSet<String>,
-) -> Vec<ValidationError> {
-    let mut errors = Vec::new();
+fn validate_main_file(path: &Path, callable: &HashSet<String>) -> AllErrors {
+    let mut all = AllErrors::new();
 
     let source = match fs::read_to_string(path) {
         Ok(s)  => s,
-        Err(e) => { errors.push(err(path, format!("Could not read main.bu: {}", e))); return errors; }
-    };
-
-    let sf = match parser::parse_file(&source, false) {
-        Ok(BuFile::Source(s))    => s,
-        Ok(BuFile::Inventory(_)) => return errors,
-        Err(e) => { errors.push(err(path, format!("Parse error in main.bu: {}", e))); return errors; }
+        Err(e) => {
+            all.push_structural(err(path, format!("Could not read main.bu: {}", e)));
+            return all;
+        }
     };
 
     let path_str = path.display().to_string();
+    let result   = parser::parse_file_tolerant(&source, &path_str);
+    all.extend_parse(result.errors);
 
-    if sf.bullets.len() > 5 {
-        errors.push(ferr(&path_str, format!(
-            "main.bu cannot contain more than 5 functions (found {}).",
-            sf.bullets.len()
-        )));
+    if let BuFile::Source(ref sf) = result.file {
+        if sf.bullets.len() > 5 {
+            all.push_structural(ferr(&path_str, format!(
+                "main.bu cannot contain more than 5 functions (found {}).",
+                sf.bullets.len()
+            )));
+        }
+        for func in &sf.bullets {
+            all.extend_structural(validate_function(func, &path_str, callable, false));
+        }
     }
 
-    // main.bu can call anything in the child callable set — it is never skirmish-restricted
-    for func in &sf.bullets {
-        errors.extend(validate_function(func, &path_str, callable, false));
-    }
-
-    errors
+    all
 }
 
-// ── Inventory completeness validation ────────────────────────────────────────
+// ── Inventory completeness validation ─────────────────────────────────────────
 
 fn build_inv_map(inv: &InventoryFile) -> HashMap<String, Vec<String>> {
     inv.entries.iter()
@@ -274,6 +291,8 @@ fn validate_inventory_completeness(
             Err(_) => continue,
         };
 
+        // Use strict parse here: if it fails we already reported a parse error
+        // from the tolerant pass below; no need to duplicate.
         let sf = match parser::parse_file(&source, false) {
             Ok(BuFile::Source(s)) => s,
             _ => continue,
@@ -313,35 +332,43 @@ fn validate_source_file(
     folder_rank:    &Rank,
     _inv_map:       &HashMap<String, Vec<String>>,
     child_callable: &HashSet<String>,
-) -> Vec<ValidationError> {
-    let mut errors = Vec::new();
+) -> AllErrors {
+    let mut all = AllErrors::new();
 
     let source = match fs::read_to_string(path) {
         Ok(s)  => s,
-        Err(e) => { errors.push(err(path, format!("Could not read file: {}", e))); return errors; }
+        Err(e) => {
+            all.push_structural(err(path, format!("Could not read file: {}", e)));
+            return all;
+        }
     };
 
-    let sf = match parser::parse_file(&source, false) {
-        Ok(BuFile::Source(s))    => s,
-        Ok(BuFile::Inventory(_)) => return errors,
-        Err(e) => { errors.push(err(path, format!("Parse error: {}", e))); return errors; }
+    let path_str = path.display().to_string();
+
+    // Tolerant parse: collect parse errors AND continue with whatever parsed ok
+    let result = parser::parse_file_tolerant(&source, &path_str);
+    all.extend_parse(result.errors);
+
+    let sf = match result.file {
+        BuFile::Source(s) => s,
+        _                 => return all,
     };
 
-    let path_str    = path.display().to_string();
     let is_skirmish = folder_rank == &Rank::Skirmish;
 
     if sf.bullets.len() > 5 {
-        errors.push(ferr(&path_str, format!(
+        all.push_structural(ferr(&path_str, format!(
             "A source file cannot contain more than 5 functions (found {}).",
             sf.bullets.len()
         )));
     }
 
+    // Validate every successfully-parsed function — don't stop on first error
     for func in &sf.bullets {
-        errors.extend(validate_function(func, &path_str, child_callable, is_skirmish));
+        all.extend_structural(validate_function(func, &path_str, child_callable, is_skirmish));
     }
 
-    errors
+    all
 }
 
 // ── Function / bullet validation ──────────────────────────────────────────────
@@ -353,7 +380,34 @@ fn validate_function(
     is_skirmish: bool,
 ) -> Vec<ValidationError> {
     match &func.body {
-        BulletBody::Native { .. } => vec![],
+        BulletBody::Native { backend, .. } => {
+            // Validate that the escape block backend matches the project target.
+            // We check against the Rust backend here; when more backends are
+            // added this should receive the target backend as a parameter.
+            match backend {
+                crate::ast::Backend::Rust       => vec![],
+                crate::ast::Backend::Python     => vec![],
+                crate::ast::Backend::C          => vec![],
+                crate::ast::Backend::Cpp        => vec![],
+                crate::ast::Backend::Go         => vec![],
+                crate::ast::Backend::Unknown(kw) => vec![ferr(path, format!(
+                    "Function \'{}\': \'@{}\' is not a supported backend.                      Supported escape blocks: @rust, @python, @c, @cpp, @go.",
+                    func.name, kw
+                ))],
+            }
+        }
+        BulletBody::Builtin(name) => {
+            // Validate that the builtin name is known at check time.
+            if !crate::stdlib::is_known_builtin(name) {
+                vec![ferr(path, format!(
+                    "Function \'{}\': \'builtin::{}\' is not a known builtin. \
+                     Run `bullang stdlib --list` to see available builtins.",
+                    func.name, name
+                ))]
+            } else {
+                vec![]
+            }
+        }
         BulletBody::Pipes(pipes)  => validate_bullets(
             pipes, &func.name, &func.output.name,
             &func.params, path, callable, is_skirmish,
@@ -528,13 +582,11 @@ pub fn read_folder_rank(dir: &Path) -> Option<Rank> {
     read_inventory(dir).ok().map(|inv| inv.rank)
 }
 
-/// Returns the path to main.bu in this directory, if it exists.
 pub fn main_bu_path(dir: &Path) -> Option<PathBuf> {
     let p = dir.join("main.bu");
     if p.exists() { Some(p) } else { None }
 }
 
-/// Collect all .bu files, excluding inventory.bu AND main.bu.
 pub fn collect_bu_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .into_iter().flatten().flatten().map(|e| e.path())
