@@ -12,7 +12,7 @@ language.
 ## Installation
 
 ```bash
-git clone https://github.com/My-sidequests/Bullang.git
+git clone https://github.com/My-sidequests/Bullang.git bullang
 cd bullang
 cargo build --release
 sudo ./target/release/bullang install
