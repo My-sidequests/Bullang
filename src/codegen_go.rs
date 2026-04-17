@@ -290,34 +290,36 @@ fn rust_type_to_go(s: &str) -> String {
 }
 
 fn translate_go_generic(s: &str) -> String {
-    if s.starts_with("Vec<") && s.ends_with('>') {
+    if s.starts_with("Vec[") && s.ends_with(']') {
         return format!("[]{}", rust_type_to_go(&s[4..s.len()-1]));
     }
-    if s.starts_with("Option<") && s.ends_with('>') {
+    if s.starts_with("Option[") && s.ends_with(']') {
         return format!("*{}", rust_type_to_go(&s[7..s.len()-1]));
     }
     if s.starts_with('&') {
         return format!("*{}", rust_type_to_go(s[1..].trim()));
     }
-    if s.starts_with("fn(") {
+    if s.starts_with("Fn[") {
         return translate_fn_type_go(s);
     }
     format!("interface{{}}  /* {} */", s)
 }
 
 fn translate_fn_type_go(s: &str) -> String {
-    if let Some(arrow_pos) = s.find("->") {
-        let params_part = &s[3..s[..arrow_pos].rfind(')').unwrap_or(s.len()-1)];
-        let ret_part    = s[arrow_pos+2..].trim();
-        let param_types: Vec<String> = params_part.split(',')
-            .map(|p| rust_type_to_go(p.trim()))
-            .filter(|s| !s.is_empty())
-            .collect();
-        let ret_go = rust_type_to_go(ret_part);
-        if ret_go.is_empty() { format!("func({})", param_types.join(", ")) }
-        else { format!("func({}) {}", param_types.join(", "), ret_go) }
+    // Fn[T, U -> V]  →  func(T, U) V
+    let inner = s.trim_start_matches("Fn[").trim_end_matches(']');
+    if inner.is_empty() { return "func()".to_string(); }
+    if let Some(arrow) = inner.find("->") {
+        let params_str = inner[..arrow].trim();
+        let ret_str    = inner[arrow+2..].trim();
+        let params: Vec<String> = if params_str.is_empty() { vec![] }
+            else { params_str.split(',').map(|p| rust_type_to_go(p.trim())).collect() };
+        let ret = rust_type_to_go(ret_str);
+        if ret.is_empty() { format!("func({})", params.join(", ")) }
+        else { format!("func({}) {}", params.join(", "), ret) }
     } else {
-        "func()".to_string()
+        let ret = rust_type_to_go(inner.trim());
+        format!("func() {}", ret)
     }
 }
 

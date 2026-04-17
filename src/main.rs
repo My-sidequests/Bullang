@@ -1,3 +1,7 @@
+/// The canonical source repository. Override with `bullang update --repo <url>`.
+/// Change this to your real repository URL before distributing.
+const DEFAULT_REPO: &str = "https://github.com/My-sidequests/Bullang.git";
+
 mod ast;
 mod build;
 mod codegen;
@@ -39,15 +43,18 @@ enum Command {
     ///
     /// Examples:
     ///   bullang init my_project --depth 2
-    ///   bullang init my_project --depth 4 --lib stdio.h --lib math.h
+    ///   bullang init my_project --depth 4 --lang c --lib stdio.h --lib math.h
     Init {
         /// Name of the project folder to create
         name: String,
         /// Hierarchy depth: 1 = skirmish, 2 = tactic+skirmish, … 6 = full war chain
         #[arg(short, long, default_value = "2")]
         depth: u8,
+        /// Target language (rs, py, c, cpp, go). Written to inventory as #lang: and
+        /// used as the default for `bullang convert` so you don't need to specify -e.
+        #[arg(long, value_name = "EXT")]
+        lang: Option<String>,
         /// External library to declare (repeatable). Used as #include <lib> in C/C++ output.
-        /// Example: --lib stdio.h --lib math.h
         #[arg(long = "lib", value_name = "HEADER")]
         libs: Vec<String>,
         /// Where to create the project (default: current directory)
@@ -71,9 +78,18 @@ enum Command {
 
     /// Explore the standard library of builtin functions.
     Stdlib {
-        /// List all available builtin functions and their signatures
         #[arg(long)]
         list: bool,
+    },
+
+    /// Update bullang to the latest version from the source repository.
+    ///
+    /// Requires git and cargo to be available on PATH.
+    /// Clones the repository, builds a release binary, and reinstalls.
+    Update {
+        /// Override the repository URL (default: the repo this binary was built from)
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Transpile a single .bu file to stdout or --output.
@@ -88,9 +104,10 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Install                               => cmd_install(),
-        Command::Init { name, depth, libs, path }     => cmd_init(name, depth, libs, path),
+        Command::Init { name, depth, lang, libs, path } => cmd_init(name, depth, lang, libs, path),
         Command::Convert { folder, name, ext, out }   => cmd_convert(folder, name, ext, out),
         Command::Check                                => cmd_check(),
+        Command::Update { repo }                       => cmd_update(repo),
         Command::Stdlib { list }                      => cmd_stdlib(list),
         Command::File { input, output }               => cmd_file(input, output),
     }
@@ -170,7 +187,7 @@ fn check_path_contains(dest: &str) {
 
 // ── init ──────────────────────────────────────────────────────────────────────
 
-fn cmd_init(name: String, depth: u8, libs: Vec<String>, path: Option<PathBuf>) {
+fn cmd_init(name: String, depth: u8, lang: Option<String>, libs: Vec<String>, path: Option<PathBuf>) {
     if depth < 1 || depth > 6 {
         eprintln!("error: --depth must be between 1 and 6");
         eprintln!();
@@ -189,12 +206,15 @@ fn cmd_init(name: String, depth: u8, libs: Vec<String>, path: Option<PathBuf>) {
     println!("bullang init");
     println!("  name  : {}", name);
     println!("  depth : {} (root rank: {})", depth, root_rank.name());
+    if let Some(ref l) = lang {
+        println!("  lang  : {}", l);
+    }
     if !libs.is_empty() {
         println!("  libs  : {}", libs.join(", "));
     }
     println!();
 
-    match init::init(&parent, &name, depth, &libs) {
+    match init::init(&parent, &name, depth, lang.as_deref(), &libs) {
         Ok(result) => {
             init::print_tree(&result);
             println!();
@@ -211,6 +231,115 @@ fn cmd_init(name: String, depth: u8, libs: Vec<String>, path: Option<PathBuf>) {
             eprintln!("error: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+// ── update ───────────────────────────────────────────────────────────────────
+
+fn cmd_update(repo: Option<String>) {
+    let repo_url = repo.as_deref().unwrap_or(DEFAULT_REPO);
+
+    if repo_url.contains("YOUR_USERNAME") {
+        eprintln!("error: no repository URL configured.");
+        eprintln!("  Either set the URL at build time (edit DEFAULT_REPO in main.rs),");
+        eprintln!("  or pass it directly:  bullang update --repo https://github.com/you/bullang");
+        std::process::exit(1);
+    }
+
+    println!("bullang update");
+    println!("  repo : {}", repo_url);
+    println!();
+
+    // Require git
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("error: git is not available on PATH — cannot update");
+        std::process::exit(1);
+    }
+    // Require cargo
+    if std::process::Command::new("cargo").arg("--version").output().is_err() {
+        eprintln!("error: cargo is not available on PATH — cannot update");
+        std::process::exit(1);
+    }
+
+    // Clone into a temp directory
+    let tmp = std::env::temp_dir().join("bullang_update");
+    if tmp.exists() {
+        println!("cleaning previous update directory...");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    println!("cloning {}...", repo_url);
+    let clone = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", repo_url, tmp.to_str().unwrap()])
+        .status();
+    match clone {
+        Ok(s) if s.success() => {}
+        _ => {
+            eprintln!("error: git clone failed — check the repository URL and your internet connection");
+            std::process::exit(1);
+        }
+    }
+
+    // Build release binary
+    println!("building release binary (this may take a minute)...");
+    let build = std::process::Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(&tmp)
+        .status();
+    match build {
+        Ok(s) if s.success() => {}
+        _ => {
+            eprintln!("error: cargo build --release failed");
+            std::process::exit(1);
+        }
+    }
+
+    // The new binary
+    let new_bin = tmp.join("target").join("release").join("bullang");
+    if !new_bin.exists() {
+        eprintln!("error: built binary not found at {}", new_bin.display());
+        std::process::exit(1);
+    }
+
+    // Find where the current binary is installed
+    let current = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("error: cannot locate current binary: {}", e);
+        std::process::exit(1);
+    });
+
+    println!("installing to {}...", current.display());
+    match std::fs::copy(&new_bin, &current) {
+        Ok(_) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&current).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&current, perms).ok();
+            }
+        }
+        Err(e) => {
+            eprintln!("error: could not replace binary: {}", e);
+            eprintln!("try:  sudo bullang update --repo {}", repo_url);
+            std::process::exit(1);
+        }
+    }
+
+    // Clean up
+    std::fs::remove_dir_all(&tmp).ok();
+
+    println!();
+    println!("bullang updated successfully.");
+
+    // Print new version if binary supports it
+    let ver = std::process::Command::new(&current)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    if !ver.trim().is_empty() {
+        print!("  {}", ver);
     }
 }
 
@@ -256,8 +385,30 @@ fn cmd_stdlib(_list: bool) {
 // ── convert ───────────────────────────────────────────────────────────────────
 
 fn cmd_convert(folder: Option<PathBuf>, name: Option<String>, ext: String, out: Option<PathBuf>) {
-    let backend = Backend::from_ext(&ext).unwrap_or_else(|| {
-        eprintln!("error: unknown extension '{}' — supported: rs, py, c, cpp, go", ext);
+    // If -e was left at the default "rs", check whether the project declares #lang
+    // in its inventory — if so, honour that instead.
+    let resolved_ext = if ext == "rs" {
+        // Peek at the root inventory before we fully parse it
+        let probe_dir = match &folder {
+            Some(p) => p.canonicalize().unwrap_or_else(|_| p.clone()),
+            None    => current_dir(),
+        };
+        let probe_root = find_root_from_probe(&probe_dir);
+        if let Ok(inv) = validator::read_inventory(&probe_root) {
+            if let Some(ref lang) = inv.lang {
+                lang.ext().to_string()
+            } else {
+                ext.clone()
+            }
+        } else {
+            ext.clone()
+        }
+    } else {
+        ext.clone()
+    };
+
+    let backend = Backend::from_ext(&resolved_ext).unwrap_or_else(|| {
+        eprintln!("error: unknown extension '{}' — supported: rs, py, c, cpp, go", resolved_ext);
         std::process::exit(1);
     });
 
@@ -478,6 +629,21 @@ fn print_type_errors(errors: &[typecheck::TypeError]) {
 
     eprintln!();
     eprintln!("{} type error(s) in {} file(s)", total, file_count);
+}
+
+// ── Root detection (probe — no exit on failure) ──────────────────────────────
+
+/// Like find_root_from but returns the given dir if no inventory found (no exit).
+fn find_root_from_probe(start: &Path) -> PathBuf {
+    if !start.join("inventory.bu").exists() { return start.to_path_buf(); }
+    let mut root = start.to_path_buf();
+    loop {
+        match root.parent() {
+            Some(p) if p.join("inventory.bu").exists() => root = p.to_path_buf(),
+            _ => break,
+        }
+    }
+    root
 }
 
 // ── Root detection ────────────────────────────────────────────────────────────

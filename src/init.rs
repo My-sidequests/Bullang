@@ -46,7 +46,7 @@ pub struct InitResult {
     pub files_created: Vec<PathBuf>,
 }
 
-pub fn init(parent: &Path, name: &str, depth: u8, libs: &[String]) -> Result<InitResult, String> {
+pub fn init(parent: &Path, name: &str, depth: u8, lang: Option<&str>, libs: &[String]) -> Result<InitResult, String> {
     let root = parent.join(name);
 
     if root.exists() {
@@ -60,7 +60,7 @@ pub fn init(parent: &Path, name: &str, depth: u8, libs: &[String]) -> Result<Ini
     let total  = ranks.len();
     let mut files_created: Vec<PathBuf> = Vec::new();
 
-    create_level(&root, &ranks, name, total, true, libs, &mut files_created)?;
+    create_level(&root, &ranks, name, total, true, lang, libs, &mut files_created)?;
 
     Ok(InitResult { root, files_created })
 }
@@ -71,8 +71,9 @@ fn create_level(
     dir:     &Path,
     ranks:   &[Rank],
     name:    &str,
-    total:   usize,    // total depth (never changes across recursion)
-    is_root: bool,     // true only for the very first call
+    total:   usize,
+    is_root: bool,
+    lang:    Option<&str>,
     libs:    &[String],
     created: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
@@ -82,12 +83,17 @@ fn create_level(
         .map_err(|e| format!("Could not create '{}': {}", dir.display(), e))?;
 
     // Write inventory.bu for this level.
-    // Libs are declared at the root level only — they propagate to the whole tree.
     let mut inv_content = format!("#rank: {};\n", rank.name());
-    if is_root && !libs.is_empty() {
-        inv_content.push('\n');
-        for lib in libs {
-            inv_content.push_str(&format!("#lib: {};\n", lib));
+    if is_root {
+        if let Some(l) = lang {
+            inv_content.push('\n');
+            inv_content.push_str(&format!("#lang: {};\n", l));
+        }
+        if !libs.is_empty() {
+            inv_content.push('\n');
+            for lib in libs {
+                inv_content.push_str(&format!("#lib: {};\n", lib));
+            }
         }
     }
     if rank == &Rank::Skirmish {
@@ -103,7 +109,7 @@ fn create_level(
         let child_rank = &ranks[1];
         let child_name = format!("{}_{}", child_rank.name(), name);
         let child_dir  = dir.join(&child_name);
-        create_level(&child_dir, &ranks[1..], name, total, false, &[], created)?;
+        create_level(&child_dir, &ranks[1..], name, total, false, None, &[], created)?;
     }
 
     // Write main.bu only at the root (not at intermediate levels)

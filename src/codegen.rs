@@ -96,6 +96,122 @@ pub fn emit_lib_rs(child_modules: &[String]) -> String {
     out
 }
 
+// ── Type translation: Bullang syntax → Rust syntax ──────────────────────────
+//
+// Bullang uses bracket generics (Vec[T], Option[T]) and Tuple[T,U] / Fn[T->U].
+// Rust requires angle-bracket generics (Vec<T>, Option<T>), tuple syntax (T, U),
+// and fn pointer syntax fn(T)->U.  This function translates at codegen time so
+// developers write clean Bullang syntax while the output is valid Rust.
+
+pub fn bu_type_to_rust(ty: &BuType) -> String {
+    match ty {
+        BuType::Named(s)     => translate_named_to_rust(s),
+        BuType::Tuple(inner) => format!(
+            "({})",
+            inner.iter().map(bu_type_to_rust).collect::<Vec<_>>().join(", ")
+        ),
+        BuType::Array(t, n)  => format!("[{}; {}]", bu_type_to_rust(t), n),
+        BuType::Unknown      => "_".to_string(),
+    }
+}
+
+fn translate_named_to_rust(s: &str) -> String {
+    // Vec[T] → Vec<T>
+    if s.starts_with("Vec[") && s.ends_with(']') {
+        let inner = &s[4..s.len()-1];
+        return format!("Vec<{}>", translate_named_to_rust(inner));
+    }
+    // Option[T] → Option<T>
+    if s.starts_with("Option[") && s.ends_with(']') {
+        let inner = &s[7..s.len()-1];
+        return format!("Option<{}>", translate_named_to_rust(inner));
+    }
+    // Result[T, E] → Result<T, E>
+    if s.starts_with("Result[") && s.ends_with(']') {
+        let inner = &s[7..s.len()-1];
+        // split on first comma not inside brackets
+        let parts = split_top_level(inner, ',');
+        let translated: Vec<String> = parts.iter()
+            .map(|p| translate_named_to_rust(p.trim()))
+            .collect();
+        return format!("Result<{}>", translated.join(", "));
+    }
+    // Tuple[T, U] → (T, U)
+    if s.starts_with("Tuple[") && s.ends_with(']') {
+        let inner = &s[6..s.len()-1];
+        let parts = split_top_level(inner, ',');
+        let translated: Vec<String> = parts.iter()
+            .map(|p| translate_named_to_rust(p.trim()))
+            .collect();
+        return format!("({})", translated.join(", "));
+    }
+    // Fn[T, U -> V] → fn(T, U) -> V
+    if s.starts_with("Fn[") && s.ends_with(']') {
+        let inner = &s[3..s.len()-1];
+        return translate_fn_to_rust(inner);
+    }
+    // Box[T] → Box<T>
+    if s.starts_with("Box[") && s.ends_with(']') {
+        let inner = &s[4..s.len()-1];
+        return format!("Box<{}>", translate_named_to_rust(inner));
+    }
+    // HashMap[K, V] → HashMap<K, V>
+    if s.starts_with("HashMap[") && s.ends_with(']') {
+        let inner = &s[8..s.len()-1];
+        let parts = split_top_level(inner, ',');
+        if parts.len() == 2 {
+            return format!("HashMap<{}, {}>",
+                translate_named_to_rust(parts[0].trim()),
+                translate_named_to_rust(parts[1].trim()));
+        }
+    }
+    // Already valid Rust (angle brackets, primitives, &T etc.) — pass through
+    s.to_string()
+}
+
+fn translate_fn_to_rust(inner: &str) -> String {
+    // inner is contents of Fn[...]: "T, U -> V" or "T -> V" or "-> V" or ""
+    if let Some(arrow) = inner.find("->") {
+        let params_str = inner[..arrow].trim();
+        let ret_str    = inner[arrow+2..].trim();
+        let params: Vec<String> = if params_str.is_empty() { vec![] }
+            else {
+                split_top_level(params_str, ',').iter()
+                    .map(|p| translate_named_to_rust(p.trim()))
+                    .collect()
+            };
+        let ret = if ret_str.is_empty() { String::new() }
+            else { translate_named_to_rust(ret_str) };
+        if ret.is_empty() { format!("fn({})", params.join(", ")) }
+        else              { format!("fn({}) -> {}", params.join(", "), ret) }
+    } else if inner.trim().is_empty() {
+        "fn()".to_string()
+    } else {
+        // No arrow: treat as return type with no params
+        format!("fn() -> {}", translate_named_to_rust(inner.trim()))
+    }
+}
+
+/// Split a string on `sep` while respecting nested bracket depth.
+fn split_top_level(s: &str, sep: char) -> Vec<String> {
+    let mut parts  = Vec::new();
+    let mut current = String::new();
+    let mut depth   = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '[' | '(' | '<' => { depth += 1; current.push(ch); }
+            ']' | ')' | '>' => { depth -= 1; current.push(ch); }
+            c if c == sep && depth == 0 => {
+                parts.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => { current.push(ch); }
+        }
+    }
+    if !current.trim().is_empty() { parts.push(current.trim().to_string()); }
+    parts
+}
+
 // ── Function emitters ─────────────────────────────────────────────────────────
 
 /// Emit a regular function. All are `pub` since there is no private code in Bullang.
@@ -103,9 +219,9 @@ fn emit_function(func: &Bullet, backend: &Backend) -> String {
     let mut out = String::new();
 
     let params = func.params.iter()
-        .map(|p| format!("{}: {}", p.name, p.ty.to_rust()))
+        .map(|p| format!("{}: {}", p.name, bu_type_to_rust(&p.ty)))
         .collect::<Vec<_>>().join(", ");
-    let ret_ty = func.output.ty.to_rust();
+    let ret_ty = bu_type_to_rust(&func.output.ty);
 
     out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
     emit_body(&mut out, &func.body, &func.params, backend);

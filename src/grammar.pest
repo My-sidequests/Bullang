@@ -6,20 +6,25 @@ COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 integer = @{ "-"? ~ ASCII_DIGIT+ }
 
-// ── Type system (Rust passthrough) ────────────────────────────────────────────
-// ty_unit MUST come before ty_tuple — both start with "(" and Pest is greedy.
-// ty_unit matches exactly "()" while ty_tuple requires two or more inner types.
+// ── Type system ───────────────────────────────────────────────────────────────
+// ty_unit = ()
+// ty_tuple  = Tuple[T, U]
+// ty_generic_args uses square brackets: Vec[T], Option[T], etc.
+// ty_fn = Fn[T, U -> V]  — params before ->, return type after; both optional
+// ty_array = [T; N]  (fixed-size, Rust passthrough)
 ty_unit         = { "(" ~ ")" }
-ty_tuple        = { "(" ~ ty ~ ("," ~ ty)+ ~ ")" }
-ty_generic_args = { "<" ~ ty ~ ("," ~ ty)* ~ ">" }
+ty_tuple_args   = { ty ~ ("," ~ ty)+ }
+ty_tuple        = { "Tuple" ~ "[" ~ ty_tuple_args ~ "]" }
+ty_generic_args = { "[" ~ ty ~ ("," ~ ty)* ~ "]" }
 ty_atom         = { ident ~ ty_generic_args? }
 ty_array        = { "[" ~ ty ~ ";" ~ integer ~ "]" }
-ty_fn_params    = { "(" ~ (ty ~ ("," ~ ty)*)? ~ ")" }
-ty_fn           = { "fn" ~ ty_fn_params ~ ("->" ~ ty)? }
-// Reference types: &T and &mut T — must be tried before ty_atom to avoid
-// consuming & as part of an identifier.
+// Fn[T, U -> V] — zero or more param types, optional arrow + return type
+ty_fn_params    = { ty ~ ("," ~ ty)* }
+ty_fn           = { "Fn" ~ "[" ~ (ty_fn_params ~ "->")? ~ ty? ~ "]" }
+// Reference types: &T and &mut T
 ty_ref_mut      = { "&" ~ "mut" ~ ty }
 ty_ref          = { "&" ~ ty }
+// ty_fn must be tried before ty_atom (both can start with "Fn"), ty_tuple before ty_atom
 ty              = { ty_unit | ty_tuple | ty_array | ty_fn | ty_ref_mut | ty_ref | ty_atom }
 
 // ── Binding  {name} ───────────────────────────────────────────────────────────
@@ -74,10 +79,12 @@ source_file = { SOI ~ bullet+ ~ EOI }
 // ── Inventory file ────────────────────────────────────────────────────────────
 rank_val       = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
 dir_rank       = { "#rank" ~ ":" ~ rank_val ~ ";" }
+// #lang: ext; — declares the intended target language for this project.
+// Written by `bullang init --lang <ext>` and used by `bullang convert` as default.
+lang_val       = { "rs" | "py" | "c" | "cpp" | "go" }
+dir_lang       = { "#lang" ~ ":" ~ lang_val ~ ";" }
 // #lib: header_name; — declares an external library needed by this folder.
-// For C: becomes #include <header_name> in the generated header.
-// For C++: same. Ignored for Rust and Python.
 lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
 dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
 inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
-inventory_file = { SOI ~ dir_rank ~ dir_lib* ~ inv_entry* ~ EOI }
+inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ inv_entry* ~ EOI }

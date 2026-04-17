@@ -269,7 +269,10 @@ fn infer_atom(
 
 fn build_fn_type(sig: &BulletSig) -> BuType {
     let params = sig.params.iter().map(|t| t.to_rust()).collect::<Vec<_>>().join(", ");
-    BuType::Named(format!("fn({}) -> {}", params, sig.returns.to_rust()))
+    let ret = sig.returns.to_rust();
+    let fn_str = if params.is_empty() { format!("Fn[-> {}]", ret) }
+                 else { format!("Fn[{} -> {}]", params, ret) };
+    BuType::Named(fn_str)
 }
 
 fn normalize(s: &str) -> String { s.split_whitespace().collect() }

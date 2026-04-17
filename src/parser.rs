@@ -230,6 +230,7 @@ fn parse_source(pair: Pair<Rule>) -> SourceFile {
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     let mut rank    = None;
+    let mut lang    = None;
     let mut libs    = Vec::new();
     let mut entries = Vec::new();
 
@@ -237,6 +238,10 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
         match inner.as_rule() {
             Rule::dir_rank => {
                 rank = Rank::from_str(inner.into_inner().next().unwrap().as_str());
+            }
+            Rule::dir_lang => {
+                let ext = inner.into_inner().next().unwrap().as_str();
+                lang = Backend::from_ext(ext);
             }
             Rule::dir_lib => {
                 let name = inner.into_inner().next().unwrap().as_str().trim().to_string();
@@ -255,6 +260,7 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
 
     InventoryFile {
         rank:    rank.expect("inventory.bu is missing #rank"),
+        lang,
         libs,
         entries,
     }
@@ -412,15 +418,23 @@ fn parse_ty(pair: Pair<Rule>) -> BuType {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::ty_unit  => BuType::Named("()".to_string()),
-        Rule::ty_tuple => BuType::Tuple(inner.into_inner().map(parse_ty).collect()),
+        Rule::ty_tuple => {
+            // Tuple[T, U, ...] — walk ty_tuple_args inner types
+            let types: Vec<BuType> = inner.into_inner()
+                .flat_map(|p| p.into_inner())   // ty_tuple_args → its ty children
+                .filter(|p| p.as_rule() == Rule::ty)
+                .map(parse_ty)
+                .collect();
+            BuType::Tuple(types)
+        }
         Rule::ty_array => {
             let mut ai      = inner.into_inner();
             let elem        = parse_ty(ai.next().unwrap());
             let size: usize = ai.next().unwrap().as_str().parse().unwrap();
             BuType::Array(Box::new(elem), size)
         }
+        // Fn[...], &T, &mut T, and plain atoms stored verbatim — codegen handles
         Rule::ty_fn      => BuType::Named(inner.as_str().trim().to_string()),
-        // Reference types: captured verbatim as Named — Rust codegen uses them directly.
         Rule::ty_ref     => BuType::Named(inner.as_str().trim().to_string()),
         Rule::ty_ref_mut => BuType::Named(inner.as_str().trim().to_string()),
         Rule::ty_atom    => BuType::Named(inner.as_str().trim().to_string()),

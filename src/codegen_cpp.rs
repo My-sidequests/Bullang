@@ -237,11 +237,11 @@ fn rust_type_to_cpp(s: &str) -> String {
 }
 
 fn translate_cpp_generic(s: &str) -> String {
-    if s.starts_with("Vec<") && s.ends_with('>') {
+    if s.starts_with("Vec[") && s.ends_with(']') {
         let inner = &s[4..s.len()-1];
         return format!("std::vector<{}>", rust_type_to_cpp(inner));
     }
-    if s.starts_with("Option<") && s.ends_with('>') {
+    if s.starts_with("Option[") && s.ends_with(']') {
         let inner = &s[7..s.len()-1];
         return format!("std::optional<{}>", rust_type_to_cpp(inner));
     }
@@ -253,7 +253,7 @@ fn translate_cpp_generic(s: &str) -> String {
         let inner = s[1..].trim();
         return format!("const {}&", rust_type_to_cpp(inner));
     }
-    if s.starts_with("fn(") {
+    if s.starts_with("Fn[") {
         return translate_fn_type_cpp(s);
     }
     if s.starts_with('(') && s.contains(',') {
@@ -268,18 +268,20 @@ fn translate_cpp_generic(s: &str) -> String {
 }
 
 fn translate_fn_type_cpp(s: &str) -> String {
-    // fn(A, B) -> C  →  std::function<C(A, B)>
-    if let Some(arrow_pos) = s.find("->") {
-        let params_part = &s[3..s[..arrow_pos].rfind(')').unwrap_or(s.len()-1)];
-        let ret_part    = s[arrow_pos+2..].trim();
-        let param_types: Vec<String> = params_part.split(',')
-            .map(|p| rust_type_to_cpp(p.trim()))
-            .filter(|s| !s.is_empty())
-            .collect();
-        let ret_cpp = rust_type_to_cpp(ret_part);
-        format!("std::function<{}({})>", ret_cpp, param_types.join(", "))
+    // Fn[T, U -> V]  →  std::function<V(T, U)>
+    let inner = s.trim_start_matches("Fn[").trim_end_matches(']');
+    if inner.is_empty() { return "std::function<void()>".to_string(); }
+    if let Some(arrow) = inner.find("->") {
+        let params_str = inner[..arrow].trim();
+        let ret_str    = inner[arrow+2..].trim();
+        let params: Vec<String> = if params_str.is_empty() { vec![] }
+            else { params_str.split(',').map(|p| rust_type_to_cpp(p.trim())).collect() };
+        let ret = if ret_str.is_empty() { "void".to_string() }
+            else { rust_type_to_cpp(ret_str) };
+        format!("std::function<{}({})>", ret, params.join(", "))
     } else {
-        "std::function<void()>".to_string()
+        let ret = rust_type_to_cpp(inner.trim());
+        format!("std::function<{}()>", ret)
     }
 }
 

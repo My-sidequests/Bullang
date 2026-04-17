@@ -249,7 +249,7 @@ fn rust_type_to_c(s: &str) -> String {
 
 fn translate_c_generic(s: &str) -> String {
     // Vec<T> → T*  (pointer to array — caller manages memory)
-    if s.starts_with("Vec<") && s.ends_with('>') {
+    if s.starts_with("Vec[") && s.ends_with(']') {
         let inner = &s[4..s.len()-1];
         return format!("{}*", rust_type_to_c(inner));
     }
@@ -264,12 +264,12 @@ fn translate_c_generic(s: &str) -> String {
         return format!("{}*", rust_type_to_c(inner));
     }
     // Option<T> → T  (C has no Option; use pointer for nullable)
-    if s.starts_with("Option<") && s.ends_with('>') {
+    if s.starts_with("Option[") && s.ends_with(']') {
         let inner = &s[7..s.len()-1];
         return format!("{}*  /* nullable */", rust_type_to_c(inner));
     }
     // fn(T) -> U → function pointer
-    if s.starts_with("fn(") {
+    if s.starts_with("Fn[") {
         return "void*  /* fn ptr */".to_string();
     }
     // Unknown: pass through

@@ -134,7 +134,7 @@ impl BuType {
         match self {
             BuType::Named(s)     => s.clone(),
             BuType::Tuple(inner) => format!(
-                "({})",
+                "Tuple[{}]",
                 inner.iter().map(|t| t.to_rust()).collect::<Vec<_>>().join(", ")
             ),
             BuType::Array(ty, n) => format!("[{}; {}]", ty.to_rust(), n),
@@ -266,6 +266,7 @@ pub struct SourceFile {
 #[derive(Debug, Clone)]
 pub struct InventoryFile {
     pub rank:    Rank,
+    pub lang:    Option<Backend>,      // #lang: ext; — intended build target
     pub libs:    Vec<String>,          // #lib: header; declarations (C/C++ only)
     pub entries: Vec<InventoryEntry>,  // one per source file in this folder
 }

@@ -252,11 +252,11 @@ fn rust_type_to_python(s: &str) -> String {
 }
 
 fn translate_generic_type(s: &str) -> String {
-    if s.starts_with("Vec<") && s.ends_with('>') {
+    if s.starts_with("Vec[") && s.ends_with(']') {
         let inner = &s[4..s.len()-1];
         return format!("List[{}]", rust_type_to_python(inner));
     }
-    if s.starts_with("Option<") && s.ends_with('>') {
+    if s.starts_with("Option[") && s.ends_with(']') {
         let inner = &s[7..s.len()-1];
         return format!("Optional[{}]", rust_type_to_python(inner));
     }
@@ -265,7 +265,7 @@ fn translate_generic_type(s: &str) -> String {
         let inner = s[7..s.len()-1].split(',').next().unwrap_or("Any");
         return format!("Optional[{}]  # Result type", rust_type_to_python(inner.trim()));
     }
-    if s.starts_with("fn(") {
+    if s.starts_with("Fn[") {
         // fn(T) -> U → Callable[[T], U]
         return translate_fn_type(s);
     }
@@ -282,18 +282,19 @@ fn translate_generic_type(s: &str) -> String {
 }
 
 fn translate_fn_type(s: &str) -> String {
-    // Parse fn(A, B) -> C → Callable[[A, B], C]
-    // Very simplified — handles common cases
-    if let Some(arrow_pos) = s.find("->") {
-        let params_part = &s[3..s[..arrow_pos].rfind(')').unwrap_or(s.len()-1)];
-        let ret_part    = s[arrow_pos+2..].trim();
-        let param_types: Vec<String> = params_part.split(',')
-            .map(|p| rust_type_to_python(p.trim()))
-            .filter(|s| !s.is_empty())
-            .collect();
-        let ret_py = rust_type_to_python(ret_part);
-        format!("Callable[[{}], {}]", param_types.join(", "), ret_py)
+    // Parse Fn[T, U -> V] → Callable[[T, U], V]
+    let inner = s.trim_start_matches("Fn[").trim_end_matches(']');
+    if inner.is_empty() { return "Callable".to_string(); }
+    if let Some(arrow) = inner.find("->") {
+        let params_str = inner[..arrow].trim();
+        let ret_str    = inner[arrow+2..].trim();
+        let params: Vec<String> = if params_str.is_empty() { vec![] }
+            else { params_str.split(',').map(|p| rust_type_to_python(p.trim())).collect() };
+        let ret = if ret_str.is_empty() { "None".to_string() }
+            else { rust_type_to_python(ret_str) };
+        format!("Callable[[{}], {}]", params.join(", "), ret)
     } else {
-        "Callable".to_string()
+        let ret = rust_type_to_python(inner.trim());
+        format!("Callable[[], {}]", ret)
     }
 }
