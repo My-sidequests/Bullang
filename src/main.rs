@@ -275,6 +275,15 @@ fn cmd_update() {
     // Clone on first run; pull on subsequent runs.
     if src_dir.join(".git").exists() {
         println!("pulling latest changes...");
+        // Stash any local modifications (e.g. Cargo.toml edition patch from
+        // a previous run) so git pull --rebase can proceed cleanly.
+        std::process::Command::new("git")
+            .args(["stash"])
+            .current_dir(&src_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().ok();
+
         let ok = std::process::Command::new("git")
             .args(["pull", "--rebase", "--depth", "1"])
             .current_dir(&src_dir)
@@ -285,6 +294,13 @@ fn cmd_update() {
             eprintln!("error: git pull failed");
             std::process::exit(1);
         }
+        // Discard the stash — we re-apply the edition patch below if needed.
+        std::process::Command::new("git")
+            .args(["stash", "drop"])
+            .current_dir(&src_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().ok();
     } else {
         println!("cloning {} ...", repo_url);
         if let Some(parent) = src_dir.parent() {
