@@ -62,15 +62,28 @@ enum Command {
         path: Option<PathBuf>,
     },
 
-    /// Transpile a Bullang project folder.
+    /// Transpile a Bullang project folder OR a single .bu file.
+    ///
+    /// Examples:
+    ///   bullang convert my_project          (uses #lang from inventory, default: rs)
+    ///   bullang convert my_project -e py    (explicit target language)
+    ///   bullang convert path/to/file.bu     (single file → stdout)
+    ///   bullang convert path/to/file.bu -o out.rs  (single file → file)
     Convert {
+        /// Path to a Bullang project folder or a single .bu source file
         folder: Option<PathBuf>,
+        /// Output folder name (project mode only)
         #[arg(short = 'n', long)]
         name: Option<String>,
+        /// Target language extension: rs, py, c, cpp, go (default from #lang or rs)
         #[arg(short = 'e', long, default_value = "rs")]
         ext: String,
+        /// Explicit output path (project mode only)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Output file (single-file mode only; omit to write to stdout)
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 
     /// Validate and type-check the project from the current directory.
@@ -85,19 +98,9 @@ enum Command {
     /// Update bullang to the latest version from the source repository.
     ///
     /// Requires git and cargo to be available on PATH.
-    /// Clones the repository, builds a release binary, and reinstalls.
-    Update {
-        /// Override the repository URL (default: the repo this binary was built from)
-        #[arg(long)]
-        repo: Option<String>,
-    },
+    Update,
 
-    /// Transpile a single .bu file to stdout or --output.
-    File {
-        input: PathBuf,
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
+
 }
 
 fn main() {
@@ -105,11 +108,11 @@ fn main() {
     match cli.command {
         Command::Install                               => cmd_install(),
         Command::Init { name, depth, lang, libs, path } => cmd_init(name, depth, lang, libs, path),
-        Command::Convert { folder, name, ext, out }   => cmd_convert(folder, name, ext, out),
+        Command::Convert { folder, name, ext, out, output } => cmd_convert(folder, name, ext, out, output),
         Command::Check                                => cmd_check(),
-        Command::Update { repo }                       => cmd_update(repo),
+        Command::Update                                => cmd_update(),
         Command::Stdlib { list }                      => cmd_stdlib(list),
-        Command::File { input, output }               => cmd_file(input, output),
+
     }
 }
 
@@ -236,111 +239,133 @@ fn cmd_init(name: String, depth: u8, lang: Option<String>, libs: Vec<String>, pa
 
 // ── update ───────────────────────────────────────────────────────────────────
 
-fn cmd_update(repo: Option<String>) {
-    let repo_url = repo.as_deref().unwrap_or(DEFAULT_REPO);
+fn cmd_update() {
+    let repo_url = DEFAULT_REPO;
 
-    if repo_url.contains("YOUR_USERNAME") {
-        eprintln!("error: no repository URL configured.");
-        eprintln!("  Either set the URL at build time (edit DEFAULT_REPO in main.rs),");
-        eprintln!("  or pass it directly:  bullang update --repo https://github.com/you/bullang");
-        std::process::exit(1);
-    }
+    // Persistent source directory: ~/.local/share/bullang/src
+    // We keep the clone alive between runs so we can git pull instead of re-cloning.
+    let src_dir = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        std::path::PathBuf::from(home)
+            .join(".local").join("share").join("bullang").join("src")
+    };
 
     println!("bullang update");
     println!("  repo : {}", repo_url);
+    println!("  src  : {}", src_dir.display());
     println!();
 
     // Require git
-    if std::process::Command::new("git").arg("--version").output().is_err() {
-        eprintln!("error: git is not available on PATH — cannot update");
+    if std::process::Command::new("git").arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_err() {
+        eprintln!("error: git is not available on PATH");
         std::process::exit(1);
     }
     // Require cargo
-    if std::process::Command::new("cargo").arg("--version").output().is_err() {
-        eprintln!("error: cargo is not available on PATH — cannot update");
+    if std::process::Command::new("cargo").arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_err() {
+        eprintln!("error: cargo is not available on PATH");
         std::process::exit(1);
     }
 
-    // Clone into a temp directory
-    let tmp = std::env::temp_dir().join("bullang_update");
-    if tmp.exists() {
-        println!("cleaning previous update directory...");
-        std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    println!("cloning {}...", repo_url);
-    let clone = std::process::Command::new("git")
-        .args(["clone", "--depth", "1", repo_url, tmp.to_str().unwrap()])
-        .status();
-    match clone {
-        Ok(s) if s.success() => {}
-        _ => {
-            eprintln!("error: git clone failed — check the repository URL and your internet connection");
+    // Clone on first run; pull on subsequent runs.
+    if src_dir.join(".git").exists() {
+        println!("pulling latest changes...");
+        let ok = std::process::Command::new("git")
+            .args(["pull", "--rebase", "--depth", "1"])
+            .current_dir(&src_dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("error: git pull failed");
+            std::process::exit(1);
+        }
+    } else {
+        println!("cloning {} ...", repo_url);
+        if let Some(parent) = src_dir.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let ok = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", repo_url,
+                   src_dir.to_str().unwrap()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("error: git clone failed — check your internet connection");
             std::process::exit(1);
         }
     }
 
-    // Build release binary
-    println!("building release binary (this may take a minute)...");
-    let build = std::process::Command::new("cargo")
+    // Ensure Cargo.toml edition is compatible with the installed Rust toolchain.
+    // The repo may target a newer edition — clamp to "2021" if the current
+    // toolchain doesn't support the declared edition.
+    let cargo_toml_path = src_dir.join("Cargo.toml");
+    if let Ok(cargo_src) = std::fs::read_to_string(&cargo_toml_path) {
+        if cargo_src.contains("edition = \"2024\"") {
+            let patched = cargo_src.replace("edition = \"2024\"", "edition = \"2021\"");
+            std::fs::write(&cargo_toml_path, patched).ok();
+            eprintln!("note: patched Cargo.toml edition 2024→2021 for current toolchain");
+        }
+    }
+
+    // Build release binary inside the source directory
+    println!("building (this may take a minute)...");
+    let build_ok = std::process::Command::new("cargo")
         .args(["build", "--release"])
-        .current_dir(&tmp)
-        .status();
-    match build {
-        Ok(s) if s.success() => {}
-        _ => {
-            eprintln!("error: cargo build --release failed");
-            std::process::exit(1);
-        }
+        .current_dir(&src_dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !build_ok {
+        eprintln!("error: cargo build --release failed");
+        std::process::exit(1);
     }
 
-    // The new binary
-    let new_bin = tmp.join("target").join("release").join("bullang");
+    let new_bin = src_dir.join("target").join("release").join("bullang");
     if !new_bin.exists() {
         eprintln!("error: built binary not found at {}", new_bin.display());
         std::process::exit(1);
     }
 
-    // Find where the current binary is installed
+    // Locate the currently running binary
     let current = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("error: cannot locate current binary: {}", e);
         std::process::exit(1);
     });
 
-    println!("installing to {}...", current.display());
-    match std::fs::copy(&new_bin, &current) {
-        Ok(_) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&current).unwrap().permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&current, perms).ok();
-            }
-        }
-        Err(e) => {
-            eprintln!("error: could not replace binary: {}", e);
-            eprintln!("try:  sudo bullang update --repo {}", repo_url);
-            std::process::exit(1);
-        }
+    // ── Atomic replace (avoids ETXTBSY "text file busy") ──────────────────
+    // We cannot overwrite a running executable directly on Linux — the kernel
+    // locks the inode.  Writing to a sibling temp file then rename()ing it
+    // replaces the directory entry atomically without touching the running inode.
+    let tmp = current.with_extension("update_tmp");
+    if let Err(e) = std::fs::copy(&new_bin, &tmp) {
+        eprintln!("error: could not write temporary binary: {}", e);
+        eprintln!("  (try: sudo bullang update)");
+        std::process::exit(1);
     }
-
-    // Clean up
-    std::fs::remove_dir_all(&tmp).ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tmp).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&tmp, perms).ok();
+    }
+    if let Err(e) = std::fs::rename(&tmp, &current) {
+        // Clean up temp on failure
+        std::fs::remove_file(&tmp).ok();
+        eprintln!("error: could not install updated binary: {}", e);
+        eprintln!("  (try: sudo bullang update)");
+        std::process::exit(1);
+    }
 
     println!();
-    println!("bullang updated successfully.");
-
-    // Print new version if binary supports it
-    let ver = std::process::Command::new(&current)
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-    if !ver.trim().is_empty() {
-        print!("  {}", ver);
-    }
+    println!("bullang updated successfully → {}", current.display());
 }
 
 // ── stdlib ───────────────────────────────────────────────────────────────────
@@ -384,7 +409,24 @@ fn cmd_stdlib(_list: bool) {
 
 // ── convert ───────────────────────────────────────────────────────────────────
 
-fn cmd_convert(folder: Option<PathBuf>, name: Option<String>, ext: String, out: Option<PathBuf>) {
+fn cmd_convert(folder: Option<PathBuf>, name: Option<String>, ext: String, out: Option<PathBuf>, output: Option<PathBuf>) {
+    // ── Single-file mode ──────────────────────────────────────────────────────
+    // Detect single .bu file by extension first, before canonicalize().
+    if let Some(ref p) = folder {
+        let is_bu = p.extension().map(|e| e == "bu").unwrap_or(false);
+        if is_bu {
+            // Resolve path; if not found give a clear error
+            let resolved = if p.exists() {
+                p.canonicalize().unwrap_or_else(|_| p.clone())
+            } else {
+                eprintln!("error: '{}' not found", p.display());
+                std::process::exit(1);
+            };
+            cmd_convert_file(resolved, ext, output);
+            return;
+        }
+    }
+
     // If -e was left at the default "rs", check whether the project declares #lang
     // in its inventory — if so, honour that instead.
     let resolved_ext = if ext == "rs" {
@@ -536,9 +578,11 @@ fn cmd_check() {
     }
 }
 
-// ── file ──────────────────────────────────────────────────────────────────────
+// ── convert single file ──────────────────────────────────────────────────────
+// `bullang convert path/to/file.bu [-e ext] [-o out]`
+// Transpiles one source file without tree context.
 
-fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
+fn cmd_convert_file(input: PathBuf, ext: String, output: Option<PathBuf>) {
     let source = read_file(&input);
     let is_inv = input.file_name().and_then(|n| n.to_str())
         .map(|n| n == "inventory.bu").unwrap_or(false);
@@ -547,6 +591,8 @@ fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
         eprintln!("parse error in {}:\n  {}", input.display(), e);
         std::process::exit(1);
     });
+
+    let backend = Backend::from_ext(&ext).unwrap_or(Backend::Rust);
 
     match bu {
         ast::BuFile::Source(ref sf) => {
@@ -565,7 +611,23 @@ fn cmd_file(input: PathBuf, output: Option<PathBuf>) {
                 print_type_errors(&type_errors);
                 std::process::exit(1);
             }
-            write_or_print(codegen::emit_source(sf), output);
+            let content = match backend {
+                Backend::Rust        => codegen::emit_source(sf),
+                Backend::Python      => codegen_python::emit_source_py(sf),
+                Backend::C           => {
+                    let hdr = format!("{}.h", input.file_stem()
+                        .and_then(|s| s.to_str()).unwrap_or("out"));
+                    codegen_c::emit_source_c(sf, &hdr)
+                }
+                Backend::Cpp         => {
+                    let hdr = format!("{}.hpp", input.file_stem()
+                        .and_then(|s| s.to_str()).unwrap_or("out"));
+                    codegen_cpp::emit_source_cpp(sf, &hdr)
+                }
+                Backend::Go          => codegen_go::emit_source_go(sf, "main"),
+                Backend::Unknown(_)  => codegen::emit_source(sf),
+            };
+            write_or_print(content, output);
         }
         ast::BuFile::Inventory(_) => {
             write_or_print(codegen::emit_mod_rs(&[]), output);
