@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-// ── Source Location ───────────────────────────────────────────────────────────
+// ── Source location ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
