@@ -1,4 +1,4 @@
-# Bullang 1.0.0
+# Bullang
 
 A structured functional language that transpiles to Rust, Python, C, C++, and Go.
 
@@ -16,13 +16,8 @@ sudo ./target/release/bullang install
 ## Updating
 
 ```bash
-bullang update
+sudo bullang update
 ```
-
-On first run, clones the repository to `~/.local/share/bullang/src` and builds.
-On subsequent runs, `git pull`s the latest changes and rebuilds. Requires `git`
-and `cargo` on PATH. Run with `sudo` if the binary is in a system directory.
-
 ---
 
 ## Core concepts
@@ -35,13 +30,13 @@ war → theater → battle → strategy → tactic → skirmish
 
 Every folder has exactly one rank declared in `inventory.bu`. Skirmish is the
 leaf rank — source files live here, no sub-folders allowed. War is the root
-rank — sub-folders only, no source files.
+rank — sub-folders only, one main allowed, no source files.
 
 **Limits:** 5 sub-folders, 5 source files, 5 functions per file, 5 bullets per function.
 
 ### Source files
 
-Pure function declarations — no imports, no exports:
+Pure function declarations :
 
 ```
 let add(a: i32, b: i32) -> result: i32 {
@@ -80,7 +75,7 @@ target language without `-e`.
 
 ### `bullang convert`
 
-Transpile a project **or** a single `.bu` file:
+Transpile a project or a single `.bu` file:
 
 ```bash
 # Project (reads #lang from inventory; defaults to Rust)
@@ -110,22 +105,11 @@ cd my_lib && go run .                     # Go
 ### `bullang check`
 
 Validate and type-check from anywhere in the tree. Finds the root automatically.
-All errors are shown in one run, grouped by file.
-
-### `bullang update`
-
-```bash
-bullang update               # update from the official repo
-sudo bullang update          # if installed to a system directory
-```
+Useful to show possible errors before project conversion.
 
 ### `bullang stdlib --list`
 
 List all available builtin functions.
-
-### `bullang install`
-
-Install to system PATH.
 
 ---
 
@@ -198,44 +182,3 @@ let main() -> result: () {
     @end
 }
 ```
-
----
-
-## Error messages
-
-**Inventory / folder:**
-- `Missing inventory.bu in '<dir>'`
-- `Source file '<n>.bu' exists but is not listed in inventory`
-- `Function '<fn>' exists in '<file>.bu' but is not listed in inventory`
-- `<Rank> folder cannot contain more than 5 source files`
-
-**Function / bullet:**
-- `Function '<n>': cannot contain more than 5 bullets`
-- `Function '<n>' bullet N: '<x>' is an unknown parameter`
-- `Function '<n>': '{<x>}' is produced but never used`
-- `'builtin::<n>' is not a known builtin`
-- `'@<kw>' block cannot be used when building for '<backend>' backend`
-
-**Type:**
-- `Function '<n>': last bullet produces <A> but declared output is <B>`
-- `Function '<n>': operator '<op>' requires both sides to be the same type`
-
----
-
-## Roadmap
-
-| Feature | Status |
-|---------|--------|
-| Rust backend | ✓ |
-| Python backend | ✓ |
-| C backend | ✓ |
-| C++ backend | ✓ |
-| Go backend | ✓ |
-| `builtin::` stdlib — 13 universal builtins | ✓ |
-| `bullang init --lang` / `#lang:` directive | ✓ |
-| `bullang update` | ✓ |
-| `bullang convert` (project + single file, unified) | ✓ |
-| Error recovery — all errors in one run | ✓ |
-| New type syntax `Vec[T]` `Tuple[T,U]` `Fn[T->U]` | ✓ |
-| Language spec (SPEC.md) | ✓ |
-| Language server (editor integration) | Next |
