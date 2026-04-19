@@ -4,6 +4,7 @@ const DEFAULT_REPO: &str = "https://github.com/My-sidequests/Bullang.git";
 
 mod ast;
 mod build;
+mod lsp;
 mod codegen;
 mod codegen_c;
 mod codegen_cpp;
@@ -106,6 +107,13 @@ enum Command {
     /// Requires git and cargo to be available on PATH.
     Update,
 
+    /// Start the Bullang language server (LSP) on stdin/stdout.
+    ///
+    /// Configure your editor to run: bullang lsp
+    ///
+    /// Capabilities: diagnostics, hover (signatures), go-to-definition.
+    Lsp,
+
 
 }
 
@@ -118,6 +126,7 @@ fn main() {
         Command::Check                                => cmd_check(),
         Command::Update                                => cmd_update(),
         Command::Stdlib { list }                      => cmd_stdlib(list),
+        Command::Lsp                                   => run_lsp(),
 
     }
 }
@@ -274,6 +283,12 @@ fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<St
             std::process::exit(1);
         }
     }
+}
+
+// ── lsp ──────────────────────────────────────────────────────────────────────
+
+fn run_lsp() {
+    lsp::run();
 }
 
 // ── update ───────────────────────────────────────────────────────────────────
