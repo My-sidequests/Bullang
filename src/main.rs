@@ -43,15 +43,21 @@ enum Command {
     ///
     /// Examples:
     ///   bullang init my_project --depth 2
-    ///   bullang init my_project --depth 4 --lang c --lib stdio.h --lib math.h
+    ///   bullang init my_project --depth 4 --lang c --lib stdio.h
+    ///   bullang init my_project --blueprint blueprint.bu
+    ///   bullang init my_project --blueprint blueprint.bu --lang go
     Init {
         /// Name of the project folder to create
         name: String,
         /// Hierarchy depth: 1 = skirmish, 2 = tactic+skirmish, … 6 = full war chain
+        /// (ignored when --blueprint is used — depth is inferred from the blueprint)
         #[arg(short, long, default_value = "2")]
         depth: u8,
-        /// Target language (rs, py, c, cpp, go). Written to inventory as #lang: and
-        /// used as the default for `bullang convert` so you don't need to specify -e.
+        /// Path to a blueprint.bu file describing the project structure.
+        /// The blueprint is copied to the project root unchanged.
+        #[arg(long, value_name = "FILE")]
+        blueprint: Option<PathBuf>,
+        /// Target language (rs, py, c, cpp, go). Written to inventory as #lang:.
         #[arg(long, value_name = "EXT")]
         lang: Option<String>,
         /// External library to declare (repeatable). Used as #include <lib> in C/C++ output.
@@ -107,7 +113,7 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Install                               => cmd_install(),
-        Command::Init { name, depth, lang, libs, path } => cmd_init(name, depth, lang, libs, path),
+        Command::Init { name, depth, blueprint, lang, libs, path } => cmd_init(name, depth, blueprint, lang, libs, path),
         Command::Convert { folder, name, ext, out, output } => cmd_convert(folder, name, ext, out, output),
         Command::Check                                => cmd_check(),
         Command::Update                                => cmd_update(),
@@ -190,7 +196,42 @@ fn check_path_contains(dest: &str) {
 
 // ── init ──────────────────────────────────────────────────────────────────────
 
-fn cmd_init(name: String, depth: u8, lang: Option<String>, libs: Vec<String>, path: Option<PathBuf>) {
+fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<String>, libs: Vec<String>, path: Option<PathBuf>) {
+    let parent = path.unwrap_or_else(current_dir);
+
+    // ── Blueprint mode ────────────────────────────────────────────────────────
+    if let Some(ref bp_path) = blueprint {
+        let bp_src = std::fs::read_to_string(bp_path).unwrap_or_else(|e| {
+            eprintln!("error: cannot read blueprint file '{}': {}", bp_path.display(), e);
+            std::process::exit(1);
+        });
+
+        let nodes = init::parse_blueprint(&bp_src).unwrap_or_else(|e| {
+            eprintln!("error parsing blueprint: {}", e);
+            std::process::exit(1);
+        });
+
+        println!("bullang init");
+        println!("  name      : {}", name);
+        println!("  blueprint : {}", bp_path.display());
+        if let Some(ref l) = lang { println!("  lang      : {}", l); }
+        println!();
+
+        match init::init_from_blueprint(&parent, &name, &nodes, lang.as_deref(), &bp_src) {
+            Ok(result) => {
+                init::print_blueprint_tree(&result);
+                println!();
+                println!("project ready. next steps:");
+                println!("  cd {}", result.root.display());
+                println!("  # create the .bu source files listed in each inventory");
+                println!("  bullang check");
+            }
+            Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+        }
+        return;
+    }
+
+    // ── Standard depth-based mode ─────────────────────────────────────────────
     if depth < 1 || depth > 6 {
         eprintln!("error: --depth must be between 1 and 6");
         eprintln!();
@@ -202,8 +243,6 @@ fn cmd_init(name: String, depth: u8, lang: Option<String>, libs: Vec<String>, pa
         eprintln!("  depth 6 → war → theater → battle → strategy → tactic → skirmish");
         std::process::exit(1);
     }
-
-    let parent = path.unwrap_or_else(current_dir);
 
     let root_rank = init::rank_for_depth(depth).unwrap();
     println!("bullang init");

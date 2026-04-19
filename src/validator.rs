@@ -594,7 +594,7 @@ pub fn collect_bu_files(dir: &Path) -> Vec<PathBuf> {
             p.is_file()
                 && p.extension().map(|x| x == "bu").unwrap_or(false)
                 && p.file_name().and_then(|n| n.to_str())
-                    .map(|n| n != "inventory.bu" && n != "main.bu")
+                    .map(|n| n != "inventory.bu" && n != "main.bu" && n != "blueprint.bu")
                     .unwrap_or(false)
         })
         .collect();

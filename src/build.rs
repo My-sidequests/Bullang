@@ -99,6 +99,21 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         Backend::Unknown(_) => {}
     }
 
+    // ── blueprint.md ─────────────────────────────────────────────────────────
+    // If the project root contains a blueprint.bu, copy it as blueprint.md
+    // into the output so the architecture is documented alongside the code.
+    let bp_src = root.join("blueprint.bu");
+    if bp_src.exists() {
+        if let Ok(bp_content) = fs::read_to_string(&bp_src) {
+            let out_path = match backend {
+                Backend::Python => out_dir.join(crate_name).join("blueprint.md"),
+                Backend::C | Backend::Cpp | Backend::Go => out_dir.join("blueprint.md"),
+                _ => src_out.join("blueprint.md"),
+            };
+            write_file(&out_path, &bp_content, &mut files_written);
+        }
+    }
+
     BuildResult { errors, files_written }
 }
 
