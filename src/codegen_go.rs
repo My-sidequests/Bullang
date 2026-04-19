@@ -100,7 +100,6 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
                 match name.as_str() {
                     "sqrt" | "powf" | "pow" => { push_unique(&mut imports, "math"); }
                     "parse_i64" => { push_unique(&mut imports, "strconv"); push_unique(&mut imports, "strings"); }
-                    "to_string" => { push_unique(&mut imports, "fmt"); }
                     "join" | "split_str" | "trim" | "to_upper" | "to_lower"
                     | "starts_with" | "ends_with" | "replace_str" => {
                         push_unique(&mut imports, "strings");

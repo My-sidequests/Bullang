@@ -1,7 +1,7 @@
 //! Tree-walk build pass — rank-agnostic, any rank as root.
 //! Dispatches to Rust or Python codegen based on the target backend.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs;
 
 use crate::ast::{BuFile, Rank, Backend};

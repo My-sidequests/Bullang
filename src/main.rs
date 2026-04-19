@@ -281,8 +281,9 @@ fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<St
 fn cmd_update() {
     let repo_url = DEFAULT_REPO;
 
-    // Persistent source directory: ~/.local/share/bullang/src
-    // We keep the clone alive between runs so we can git pull instead of re-cloning.
+    // Work directory: ~/.local/share/bullang/src
+    // Deleted and re-cloned on every update so the local copy always exactly
+    // mirrors the repository — no stale patches, no merge conflicts.
     let src_dir = {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         std::path::PathBuf::from(home)
@@ -291,7 +292,6 @@ fn cmd_update() {
 
     println!("bullang update");
     println!("  repo : {}", repo_url);
-    println!("  src  : {}", src_dir.display());
     println!();
 
     // Require git
@@ -311,66 +311,42 @@ fn cmd_update() {
         std::process::exit(1);
     }
 
-    // Clone on first run; pull on subsequent runs.
-    if src_dir.join(".git").exists() {
-        println!("pulling latest changes...");
-        // Stash any local modifications (e.g. Cargo.toml edition patch from
-        // a previous run) so git pull --rebase can proceed cleanly.
-        std::process::Command::new("git")
-            .args(["stash"])
-            .current_dir(&src_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status().ok();
-
-        let ok = std::process::Command::new("git")
-            .args(["pull", "--rebase", "--depth", "1"])
-            .current_dir(&src_dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            eprintln!("error: git pull failed");
-            std::process::exit(1);
-        }
-        // Discard the stash — we re-apply the edition patch below if needed.
-        std::process::Command::new("git")
-            .args(["stash", "drop"])
-            .current_dir(&src_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status().ok();
-    } else {
-        println!("cloning {} ...", repo_url);
-        if let Some(parent) = src_dir.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let ok = std::process::Command::new("git")
-            .args(["clone", "--depth", "1", repo_url,
-                   src_dir.to_str().unwrap()])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            eprintln!("error: git clone failed — check your internet connection");
+    // Wipe the previous clone so we always start clean
+    if src_dir.exists() {
+        println!("removing previous source...");
+        if let Err(e) = std::fs::remove_dir_all(&src_dir) {
+            eprintln!("error: could not remove {}: {}", src_dir.display(), e);
+            eprintln!("  (try: sudo bullang update)");
             std::process::exit(1);
         }
     }
 
-    // Ensure Cargo.toml edition is compatible with the installed Rust toolchain.
-    // The repo may target a newer edition — clamp to "2021" if the current
-    // toolchain doesn't support the declared edition.
+    // Fresh clone
+    println!("cloning {}...", repo_url);
+    if let Some(parent) = src_dir.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let clone_ok = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", repo_url, src_dir.to_str().unwrap()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !clone_ok {
+        eprintln!("error: git clone failed — check your internet connection");
+        std::process::exit(1);
+    }
+
+    // Patch Cargo.toml edition if the toolchain is too old
     let cargo_toml_path = src_dir.join("Cargo.toml");
     if let Ok(cargo_src) = std::fs::read_to_string(&cargo_toml_path) {
         if cargo_src.contains("edition = \"2024\"") {
             let patched = cargo_src.replace("edition = \"2024\"", "edition = \"2021\"");
             std::fs::write(&cargo_toml_path, patched).ok();
-            eprintln!("note: patched Cargo.toml edition 2024→2021 for current toolchain");
         }
     }
 
-    // Build release binary inside the source directory
-    println!("building (this may take a minute)...");
+    // Build
+    println!("building...");
     let build_ok = std::process::Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(&src_dir)
@@ -388,16 +364,11 @@ fn cmd_update() {
         std::process::exit(1);
     }
 
-    // Locate the currently running binary
+    // Atomic replace — avoids ETXTBSY on running binaries
     let current = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("error: cannot locate current binary: {}", e);
         std::process::exit(1);
     });
-
-    // ── Atomic replace (avoids ETXTBSY "text file busy") ──────────────────
-    // We cannot overwrite a running executable directly on Linux — the kernel
-    // locks the inode.  Writing to a sibling temp file then rename()ing it
-    // replaces the directory entry atomically without touching the running inode.
     let tmp = current.with_extension("update_tmp");
     if let Err(e) = std::fs::copy(&new_bin, &tmp) {
         eprintln!("error: could not write temporary binary: {}", e);
@@ -407,12 +378,13 @@ fn cmd_update() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tmp).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&tmp, perms).ok();
+        if let Ok(meta) = std::fs::metadata(&tmp) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&tmp, perms).ok();
+        }
     }
     if let Err(e) = std::fs::rename(&tmp, &current) {
-        // Clean up temp on failure
         std::fs::remove_file(&tmp).ok();
         eprintln!("error: could not install updated binary: {}", e);
         eprintln!("  (try: sudo bullang update)");
@@ -420,7 +392,7 @@ fn cmd_update() {
     }
 
     println!();
-    println!("bullang updated successfully → {}", current.display());
+    println!("bullang updated successfully.");
 }
 
 // ── stdlib ───────────────────────────────────────────────────────────────────

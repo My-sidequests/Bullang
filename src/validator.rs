@@ -41,10 +41,7 @@ pub struct AllErrors {
 impl AllErrors {
     fn new() -> Self { Self { parse: vec![], structural: vec![] } }
     pub fn is_empty(&self) -> bool { self.parse.is_empty() && self.structural.is_empty() }
-    pub fn total(&self) -> usize { self.parse.len() + self.structural.len() }
-
     fn push_structural(&mut self, e: ValidationError) { self.structural.push(e); }
-    fn push_parse(&mut self, e: ParseError)           { self.parse.push(e); }
     fn extend_structural(&mut self, es: Vec<ValidationError>) { self.structural.extend(es); }
     fn extend_parse(&mut self, es: Vec<ParseError>)           { self.parse.extend(es); }
     fn extend_all(&mut self, other: AllErrors) {
