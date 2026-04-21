@@ -1,6 +1,6 @@
 # Bullang
 
-A structured functional language that transpiles to Rust, Python, C, C++, and Go.
+A structured functional language that transpiles to Rust, Python, C, C++, and Go. Built to secure a good project architecture.
 
 ---
 
