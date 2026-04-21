@@ -117,7 +117,7 @@ enum Command {
     /// Write LSP configuration files for detected editors.
     ///
     /// Supports: Neovim (nvim-lspconfig), Helix, Emacs (eglot).
-    /// For VS Code: install the .vsix from the Bullang releases page.
+    /// For VS Code: install from the Marketplace (search 'Bullang'). 
     EditorSetup,
 
 
@@ -423,10 +423,11 @@ fn cmd_editor_setup() {
     }
     println!();
 
-    // ── VS Code ───────────────────────────────────────────────────────────────
-    println!("  [VS Code] install the extension (.vsix) from:");
-    println!("            https://github.com/My-sidequests/Bullang/releases");
+// ── VS Code ───────────────────────────────────────────────────────────────
+    println!("  [VS Code] Search for 'Bullang' in the Extensions panel");
+    println!("            or run: code --install-extension bullang-dev.bullang");
     println!();
+    
     println!("configured: {}   skipped (already set up): {}", configured, skipped);
 }
 

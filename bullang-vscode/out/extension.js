@@ -9,8 +9,8 @@ function activate(context) {
     const config = vscode_1.workspace.getConfiguration('bullang');
     const serverPath = config.get('serverPath', 'bullang');
     const serverOptions = {
-        command: serverPath,
-        args: ['lsp'],
+        run: { command: serverPath, args: ['lsp'] },
+        debug: { command: serverPath, args: ['lsp'] },
     };
     const clientOptions = {
         documentSelector: [{ scheme: 'file', language: 'bullang' }],
