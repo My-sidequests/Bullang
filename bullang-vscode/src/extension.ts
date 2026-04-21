@@ -14,9 +14,8 @@ export function activate(context: ExtensionContext) {
     const serverPath = config.get<string>('serverPath', 'bullang');
 
     const serverOptions: ServerOptions = {
-        command:   serverPath,
-        args:      ['lsp'],
-        transport: TransportKind.stdio,
+      run:   { command: serverPath, args: ['lsp'] },
+      debug: { command: serverPath, args: ['lsp'] },
     };
 
     const clientOptions: LanguageClientOptions = {

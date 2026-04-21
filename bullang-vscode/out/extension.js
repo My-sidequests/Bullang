@@ -11,7 +11,6 @@ function activate(context) {
     const serverOptions = {
         command: serverPath,
         args: ['lsp'],
-        transport: node_1.TransportKind.stdio,
     };
     const clientOptions = {
         documentSelector: [{ scheme: 'file', language: 'bullang' }],
