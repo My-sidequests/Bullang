@@ -11,31 +11,29 @@ Language support for [Bullang](https://github.com/My-sidequests/Bullang) (`.bu` 
 
 ## Requirements
 
-`bullang` must be installed and on your PATH:
+Cargo version 1.92.0.
+
+`bullang` must be installed on your system. To install it:
 
 ```bash
-git clone https://github.com/My-sidequests/Bullang.git
+git clone https://github.com/My-sidequests/Bullang.git Bullang
 cd Bullang && cargo build --release
-sudo ./target/release/bullang install
+./target/release/bullang install
 ```
 
-Or after your first install: `bullang update`
+If already installed, consider: `bullang update`
 
-## Installing
+## Connecting the Language Server
 
-### From a .vsix file
+### Find your absolute path
 
-```bash
-cd bullang-vscode
-npm install
-npm run compile
-npx vsce package          # produces bullang-1.0.0.vsix
-code --install-extension bullang-1.0.0.vsix
-```
+- Linux / macOS: Run which bullang in your terminal.
+- Windows: Run where bullang in PowerShell.
 
-### Settings
+### Update VSCode path for Bullang
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `bullang.serverPath` | `"bullang"` | Path to bullang if not on PATH |
-| `bullang.trace.server` | `"off"` | LSP tracing: `off`, `messages`, `verbose` |
+- Copy the path (looks like /usr/local/bin/bullang or C:\Users\You\Bullang\bullang.exe).
+- Open VS Code settings and search for "Bullang Server Path".
+- In the setting box, replace "bullang" with the path.
+- Reload VS Code
+- Enjoy !
