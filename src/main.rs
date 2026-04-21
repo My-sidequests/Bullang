@@ -25,7 +25,7 @@ use crate::validator::AllErrors;
 #[derive(ClapParser)]
 #[command(
     name    = "bullang",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about   = "Bullang (.bu) transpiler\n\n\
                Install once with `bullang install`, then run from anywhere.\n\
                The source tree is never modified — all output is external."
