@@ -43,9 +43,13 @@ enum Command {
     /// Scaffold a new Bullang project.
     ///
     /// Examples:
+    ///
     ///   bullang init my_project --depth 2
+    ///
     ///   bullang init my_project --depth 4 --lang c --lib stdio.h
+    ///
     ///   bullang init my_project --blueprint blueprint.bu
+    ///
     ///   bullang init my_project --blueprint blueprint.bu --lang go
     Init {
         /// Name of the project folder to create
@@ -72,9 +76,13 @@ enum Command {
     /// Transpile a Bullang project folder OR a single .bu file.
     ///
     /// Examples:
+    ///
     ///   bullang convert my_project          (uses #lang from inventory, default: rs)
+    ///
     ///   bullang convert my_project -e py    (explicit target language)
+    ///
     ///   bullang convert path/to/file.bu     (single file → stdout)
+    ///
     ///   bullang convert path/to/file.bu -o out.rs  (single file → file)
     Convert {
         /// Path to a Bullang project folder or a single .bu source file
