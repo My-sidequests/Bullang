@@ -4,19 +4,20 @@ A structured functional language that transpiles to Rust, Python, C, C++, and Go
 
 ---
 
+## Prerequisite
+
+Having Cargo v1.92.0 installed
+
 ## Installation
 
 ```bash
-git clone https://github.com/My-sidequests/Bullang.git
-cd Bullang
-cargo build --release
-sudo ./target/release/bullang install
+cargo install --git https://github.com/My-sidequests/Bullang.git
 ```
 
 ## Updating
 
 ```bash
-sudo bullang update
+bullang update
 ```
 ---
 

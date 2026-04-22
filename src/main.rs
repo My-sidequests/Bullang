@@ -149,72 +149,23 @@ fn main() {
 // ── install ───────────────────────────────────────────────────────────────────
 
 fn cmd_install() {
-    let current_exe = std::env::current_exe().unwrap_or_else(|e| {
-        eprintln!("error: could not locate binary: {}", e);
-        std::process::exit(1);
-    });
+    println!("bullang install");
+    println!("Installing via cargo...");
 
-    let user_local = format!(
-        "{}/.local/bin/bullang",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    );
-    let dest = find_install_dest(&["/usr/local/bin/bullang", "/usr/bin/bullang"], &user_local);
+    let status = std::process::Command::new("cargo")
+        .args(["install", "--path", "."])
+        .status();
 
-    if let Some(parent) = Path::new(&dest).parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: could not create {}: {}", parent.display(), e);
+    match status {
+        Ok(s) if s.success() => {
+            println!("\nSuccess! bullang is now installed to your cargo bin folder.");
+            println!("Ensure ~/.cargo/bin is in your PATH.");
+        }
+        _ => {
+            eprintln!("\nerror: cargo install failed.");
+            eprintln!("Make sure you are in the bullang source directory.");
             std::process::exit(1);
         }
-    }
-
-    match std::fs::copy(&current_exe, &dest) {
-        Ok(_) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&dest).unwrap().permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&dest, perms).ok();
-            }
-            println!("installed: {}", dest);
-            println!("bullang is now available globally.");
-            check_path_contains(&dest);
-        }
-        Err(e) => {
-            eprintln!("error: could not install to {}: {}", dest, e);
-            eprintln!("try: sudo bullang install");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn find_install_dest(system_paths: &[&str], user_fallback: &str) -> String {
-    for path in system_paths {
-        let dir = Path::new(path).parent().unwrap_or(Path::new("/usr/local/bin"));
-        if is_writable(dir) { return path.to_string(); }
-    }
-    user_fallback.to_string()
-}
-
-fn is_writable(path: &Path) -> bool {
-    if !path.exists() { return false; }
-    let test = path.join(".bullang_write_test");
-    match std::fs::write(&test, b"") {
-        Ok(_) => { std::fs::remove_file(test).ok(); true }
-        Err(_) => false,
-    }
-}
-
-fn check_path_contains(dest: &str) {
-    let dest_dir = Path::new(dest).parent()
-        .map(|p| p.display().to_string()).unwrap_or_default();
-    let in_path = std::env::var("PATH").unwrap_or_default()
-        .split(':').any(|p| p == dest_dir);
-    if !in_path {
-        println!();
-        println!("note: {} is not in your PATH.", dest_dir);
-        println!("add to your shell profile:");
-        println!("  export PATH=\"{}:$PATH\"", dest_dir);
     }
 }
 
@@ -447,120 +398,24 @@ fn run_lsp() {
 // ── update ───────────────────────────────────────────────────────────────────
 
 fn cmd_update() {
-    let repo_url = DEFAULT_REPO;
-
-    // Work directory: ~/.local/share/bullang/src
-    // Deleted and re-cloned on every update so the local copy always exactly
-    // mirrors the repository — no stale patches, no merge conflicts.
-    let src_dir = {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        std::path::PathBuf::from(home)
-            .join(".local").join("share").join("bullang").join("src")
-    };
-
     println!("bullang update");
-    println!("  repo : {}", repo_url);
-    println!();
+    println!("Updating from {}...", DEFAULT_REPO);
 
-    // Require git
-    if std::process::Command::new("git").arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status().is_err() {
-        eprintln!("error: git is not available on PATH");
-        std::process::exit(1);
-    }
-    // Require cargo
-    if std::process::Command::new("cargo").arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status().is_err() {
-        eprintln!("error: cargo is not available on PATH");
-        std::process::exit(1);
-    }
+    // This command pulls the latest from the git repo and reinstalls it
+    let status = std::process::Command::new("cargo")
+        .args(["install", "--git", DEFAULT_REPO, "bullang"])
+        .status();
 
-    // Wipe the previous clone so we always start clean
-    if src_dir.exists() {
-        println!("removing previous source...");
-        if let Err(e) = std::fs::remove_dir_all(&src_dir) {
-            eprintln!("error: could not remove {}: {}", src_dir.display(), e);
-            eprintln!("  (try: sudo bullang update)");
+    match status {
+        Ok(s) if s.success() => {
+            println!("\nbullang updated successfully via cargo.");
+        }
+        _ => {
+            eprintln!("\nerror: update failed.");
+            eprintln!("Check your internet connection or cargo permissions.");
             std::process::exit(1);
         }
     }
-
-    // Fresh clone
-    println!("cloning {}...", repo_url);
-    if let Some(parent) = src_dir.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let clone_ok = std::process::Command::new("git")
-        .args(["clone", "--depth", "1", repo_url, src_dir.to_str().unwrap()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !clone_ok {
-        eprintln!("error: git clone failed — check your internet connection");
-        std::process::exit(1);
-    }
-
-    // Patch Cargo.toml edition if the toolchain is too old
-    let cargo_toml_path = src_dir.join("Cargo.toml");
-    if let Ok(cargo_src) = std::fs::read_to_string(&cargo_toml_path) {
-        if cargo_src.contains("edition = \"2024\"") {
-            let patched = cargo_src.replace("edition = \"2024\"", "edition = \"2021\"");
-            std::fs::write(&cargo_toml_path, patched).ok();
-        }
-    }
-
-    // Build
-    println!("building...");
-    let build_ok = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&src_dir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !build_ok {
-        eprintln!("error: cargo build --release failed");
-        std::process::exit(1);
-    }
-
-    let new_bin = src_dir.join("target").join("release").join("bullang");
-    if !new_bin.exists() {
-        eprintln!("error: built binary not found at {}", new_bin.display());
-        std::process::exit(1);
-    }
-
-    // Atomic replace — avoids ETXTBSY on running binaries
-    let current = std::env::current_exe().unwrap_or_else(|e| {
-        eprintln!("error: cannot locate current binary: {}", e);
-        std::process::exit(1);
-    });
-    let tmp = current.with_extension("update_tmp");
-    if let Err(e) = std::fs::copy(&new_bin, &tmp) {
-        eprintln!("error: could not write temporary binary: {}", e);
-        eprintln!("  (try: sudo bullang update)");
-        std::process::exit(1);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&tmp) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&tmp, perms).ok();
-        }
-    }
-    if let Err(e) = std::fs::rename(&tmp, &current) {
-        std::fs::remove_file(&tmp).ok();
-        eprintln!("error: could not install updated binary: {}", e);
-        eprintln!("  (try: sudo bullang update)");
-        std::process::exit(1);
-    }
-
-    println!();
-    println!("bullang updated successfully.");
 }
 
 // ── stdlib ───────────────────────────────────────────────────────────────────
