@@ -18,3 +18,8 @@ Having Cargo v1.92.0 installed
 ```bash
 cargo install --git https://github.com/My-sidequests/Bullang.git
 ```
+## Update Bullang to latest version
+
+```bash
+bullang update
+```
