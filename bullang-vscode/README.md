@@ -13,7 +13,7 @@ Language support for [Bullang](https://github.com/My-sidequests/Bullang) (`.bu` 
 
 Having Cargo v1.92.0 installed
 
-## Installing
+## Installing the language
 
 ```bash
 cargo install --git https://github.com/My-sidequests/Bullang.git
