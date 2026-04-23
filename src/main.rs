@@ -149,23 +149,24 @@ fn main() {
 // ── install ───────────────────────────────────────────────────────────────────
 
 fn cmd_install() {
-    println!("bullang install");
-    println!("Installing via cargo...");
-
+    println!("Installing bullang via cargo...");
     let status = std::process::Command::new("cargo")
         .args(["install", "--path", "."])
         .status();
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("\nSuccess! bullang is now installed to your cargo bin folder.");
-            println!("Ensure ~/.cargo/bin is in your PATH.");
-        }
-        _ => {
-            eprintln!("\nerror: cargo install failed.");
-            eprintln!("Make sure you are in the bullang source directory.");
-            std::process::exit(1);
-        }
+    if let Ok(s) = status {
+        if s.success() { println!("Installed to ~/.cargo/bin"); }
+    }
+}
+
+fn cmd_update() {
+    println!("Updating bullang via cargo...");
+    let status = std::process::Command::new("cargo")
+        .args(["install", "--git", DEFAULT_REPO, "bullang"])
+        .status();
+
+    if let Ok(s) = status {
+        if s.success() { println!("Update complete."); }
     }
 }
 
@@ -393,41 +394,6 @@ fn cmd_editor_setup() {
 
 fn run_lsp() {
     lsp::run();
-}
-
-// ── update ───────────────────────────────────────────────────────────────────
-
-fn cmd_update() {
-    println!("bullang update");
-    println!("  repo : {}", DEFAULT_REPO);
-    println!();
-
-    // 1. Verify Cargo is present
-    if std::process::Command::new("cargo").arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status().is_err() {
-        eprintln!("error: cargo is not available on PATH");
-        std::process::exit(1);
-    }
-
-    println!("Updating via cargo...");
-
-    // 2. Let Cargo handle the entire process: 
-    //    Cloning, building, and moving the binary to ~/.cargo/bin
-    let status = std::process::Command::new("cargo")
-        .args(["install", "--git", DEFAULT_REPO, "bullang"])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("\nbullang updated successfully.");
-        }
-        _ => {
-            eprintln!("\nerror: cargo update failed.");
-            std::process::exit(1);
-        }
-    }
 }
 
 // ── stdlib ───────────────────────────────────────────────────────────────────
