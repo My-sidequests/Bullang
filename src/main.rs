@@ -233,14 +233,7 @@ fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<St
         Ok(result) => {
             init::print_tree(&result);
             println!();
-            println!("project ready. next steps:");
-            println!("  cd {}", result.root.display());
-            if depth > 1 {
-                println!("  # edit main.bu to write your entry point");
-            }
-            println!("  # edit the .bu files in the skirmish folder");
-            println!("  bullang check");
-            println!("  bullang convert {} -n {}_out", name, name);
+            println!("project ready.");
         }
         Err(e) => {
             eprintln!("error: {}", e);
