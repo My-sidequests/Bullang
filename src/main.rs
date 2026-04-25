@@ -197,10 +197,7 @@ fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<St
             Ok(result) => {
                 init::print_blueprint_tree(&result);
                 println!();
-                println!("project ready. next steps:");
-                println!("  cd {}", result.root.display());
-                println!("  # create the .bu source files listed in each inventory");
-                println!("  bullang check");
+                println!("project ready.");
             }
             Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
         }
