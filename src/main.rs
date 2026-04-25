@@ -389,8 +389,8 @@ fn run_lsp() {
 // ── stdlib ───────────────────────────────────────────────────────────────────
 
 fn cmd_stdlib(_list: bool) {
-    println!("Bullang standard library — 13 universal builtins");
-    println!("Available in every backend: Rust, Python, C, C++, Go");
+    println!("Bullang standard library");
+    println!("Available in every backend");
     println!();
 
     println!("  Math");
@@ -421,7 +421,7 @@ fn cmd_stdlib(_list: bool) {
     println!("      builtin::abs");
     println!("  }}");
     println!();
-    println!("The function's declared parameters are passed to the builtin in order.");
+    println!("The function's parameters are passed to the builtin.");
     println!("Parameter counts are enforced at build time.");
 }
 
