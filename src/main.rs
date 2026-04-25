@@ -197,10 +197,7 @@ fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<St
             Ok(result) => {
                 init::print_blueprint_tree(&result);
                 println!();
-                println!("project ready. next steps:");
-                println!("  cd {}", result.root.display());
-                println!("  # create the .bu source files listed in each inventory");
-                println!("  bullang check");
+                println!("project ready.");
             }
             Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
         }
@@ -236,14 +233,7 @@ fn cmd_init(name: String, depth: u8, blueprint: Option<PathBuf>, lang: Option<St
         Ok(result) => {
             init::print_tree(&result);
             println!();
-            println!("project ready. next steps:");
-            println!("  cd {}", result.root.display());
-            if depth > 1 {
-                println!("  # edit main.bu to write your entry point");
-            }
-            println!("  # edit the .bu files in the skirmish folder");
-            println!("  bullang check");
-            println!("  bullang convert {} -n {}_out", name, name);
+            println!("project ready.");
         }
         Err(e) => {
             eprintln!("error: {}", e);
@@ -399,8 +389,8 @@ fn run_lsp() {
 // ── stdlib ───────────────────────────────────────────────────────────────────
 
 fn cmd_stdlib(_list: bool) {
-    println!("Bullang standard library — 13 universal builtins");
-    println!("Available in every backend: Rust, Python, C, C++, Go");
+    println!("Bullang standard library");
+    println!("Available in every backend");
     println!();
 
     println!("  Math");
@@ -431,7 +421,7 @@ fn cmd_stdlib(_list: bool) {
     println!("      builtin::abs");
     println!("  }}");
     println!();
-    println!("The function's declared parameters are passed to the builtin in order.");
+    println!("The function's parameters are passed to the builtin.");
     println!("Parameter counts are enforced at build time.");
 }
 
