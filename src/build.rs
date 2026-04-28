@@ -6,10 +6,6 @@ use std::fs;
 
 use crate::ast::{BuFile, Rank, Backend};
 use crate::codegen;
-use crate::codegen_c;
-use crate::codegen_cpp;
-use crate::codegen_go;
-use crate::codegen_python;
 use crate::parser;
 use crate::validator::{
     ValidationError, collect_bu_files, collect_subdirs,
@@ -59,7 +55,7 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         Backend::Python => {
             write_file(
                 &src_out.join("__init__.py"),
-                &codegen_python::emit_init_py(&child_modules),
+                &codegen::emit_init_py(&child_modules),
                 &mut files_written,
             );
         }
@@ -69,13 +65,13 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
             let libs = collect_all_libs(root);
-            let header = codegen_c::emit_header_c(crate_name, &src_refs, &libs);
+            let header = codegen::emit_header_c(crate_name, &src_refs, &libs);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
 
             let mut all_c: Vec<String> = child_modules.iter()
                 .map(|m| format!("{}.c", m)).collect();
             if has_main { all_c.push("main.c".to_string()); }
-            let makefile = codegen_c::emit_makefile(crate_name, &all_c, has_main);
+            let makefile = codegen::emit_makefile(crate_name, &all_c, has_main);
             write_file(&out_dir.join("Makefile"), &makefile, &mut files_written);
         }
         Backend::Cpp => {
@@ -84,17 +80,17 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
             let libs = collect_all_libs(root);
-            let header = codegen_cpp::emit_header_cpp(crate_name, &src_refs, crate_name, &libs);
+            let header = codegen::emit_header_cpp(crate_name, &src_refs, crate_name, &libs);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
 
             let mut all_cpp: Vec<String> = child_modules.iter()
                 .map(|m| format!("{}.cpp", m)).collect();
             if has_main { all_cpp.push("main.cpp".to_string()); }
-            let makefile = codegen_cpp::emit_makefile_cpp(crate_name, &all_cpp, has_main);
+            let makefile = codegen::emit_makefile_cpp(crate_name, &all_cpp, has_main);
             write_file(&out_dir.join("Makefile"), &makefile, &mut files_written);
         }
         Backend::Go => {
-            write_file(&out_dir.join("go.mod"), &codegen_go::emit_go_mod(crate_name), &mut files_written);
+            write_file(&out_dir.join("go.mod"), &codegen::emit_go_mod(crate_name), &mut files_written);
         }
         Backend::Unknown(_) => {}
     }
@@ -206,10 +202,10 @@ fn emit_folder(
             };
             let content  = match backend {
                 Backend::Rust        => codegen::emit_source(&sf),
-                Backend::Python      => codegen_python::emit_source_py(&sf),
-                Backend::C           => codegen_c::emit_source_c(&sf, &header_name),
-                Backend::Cpp         => codegen_cpp::emit_source_cpp(&sf, &hpp_name),
-                Backend::Go          => codegen_go::emit_source_go(&sf, &go_pkg),
+                Backend::Python      => codegen::emit_source_py(&sf),
+                Backend::C           => codegen::emit_source_c(&sf, &header_name),
+                Backend::Cpp         => codegen::emit_source_cpp(&sf, &hpp_name),
+                Backend::Go          => codegen::emit_source_go(&sf, &go_pkg),
                 Backend::Unknown(_)  => continue,
             };
             write_file(&out_path, &content, written);
@@ -237,7 +233,7 @@ fn emit_mod_file(dir: &Path, child_modules: &[String], backend: &Backend, writte
         Backend::Python => {
             write_file(
                 &dir.join("__init__.py"),
-                &codegen_python::emit_init_py(child_modules),
+                &codegen::emit_init_py(child_modules),
                 written,
             );
         }
@@ -278,28 +274,28 @@ fn emit_main_file(
         Backend::Python => {
             write_file(
                 &out_dir.join("__main__.py"),
-                &codegen_python::emit_main_py(&sf, crate_name),
+                &codegen::emit_main_py(&sf, crate_name),
                 written,
             );
         }
         Backend::C => {
             write_file(
                 &out_dir.join("main.c"),
-                &codegen_c::emit_main_c(&sf, &header_name),
+                &codegen::emit_main_c(&sf, &header_name),
                 written,
             );
         }
         Backend::Cpp => {
             write_file(
                 &out_dir.join("main.cpp"),
-                &codegen_cpp::emit_main_cpp(&sf, &hpp_name, crate_name),
+                &codegen::emit_main_cpp(&sf, &hpp_name, crate_name),
                 written,
             );
         }
         Backend::Go => {
             write_file(
                 &out_dir.join("main.go"),
-                &codegen_go::emit_main_go(&sf, crate_name),
+                &codegen::emit_main_go(&sf, crate_name),
                 written,
             );
         }
