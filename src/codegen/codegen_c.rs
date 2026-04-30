@@ -21,25 +21,64 @@ pub fn emit_source_c(file: &SourceFile, header_name: &str) -> String {
     out
 }
 
-// ── Header file ───────────────────────────────────────────────────────────────
+// ── Struct emitter ────────────────────────────────────────────────────────────
 
-/// Emit a header containing forward declarations for all public functions.
+pub fn emit_struct_c(s: &crate::ast::StructDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("typedef struct {{\n"));
+    for field in &s.fields {
+        out.push_str(&format!("    {} {};\n", bu_type_to_c(&field.ty), field.name));
+    }
+    out.push_str(&format!("}} {};\n", s.name));
+    out
+}
+
+// ── foreign_types.h detection ─────────────────────────────────────────────────
+
+/// Returns true if the source file uses any type that requires foreign_types.h.
+pub fn needs_foreign_types(file: &SourceFile) -> bool {
+    file.bullets.iter().any(|b| {
+        b.params.iter().any(|p| type_needs_foreign(&p.ty))
+            || type_needs_foreign(&b.output.ty)
+    })
+}
+
+fn type_needs_foreign(ty: &BuType) -> bool {
+    match ty {
+        BuType::Named(s) => s.starts_with("Vec[") || s.starts_with("HashMap["),
+        BuType::Array(t, _) => type_needs_foreign(t),
+        BuType::Tuple(ts)   => ts.iter().any(type_needs_foreign),
+        BuType::Unknown     => false,
+    }
+}
+
 pub fn emit_header_c(
     module_name:  &str,
-    source_files: &[(String, &SourceFile)],  // (filename, parsed file)
-    includes:     &[String],                  // external lib includes e.g. "stdio.h"
+    source_files: &[(String, &SourceFile)],
+    includes:     &[String],
+    structs:      &[crate::ast::StructDef],
 ) -> String {
-    let guard = format!("{}_H", module_name.to_uppercase().replace('-', "_"));
-    let mut out = String::new();
+    let guard    = format!("{}_H", module_name.to_uppercase().replace('-', "_"));
+    let needs_ft = source_files.iter().any(|(_, sf)| needs_foreign_types(sf));
+    let mut out  = String::new();
 
     out.push_str(&format!("#ifndef {}\n#define {}\n\n", guard, guard));
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stddef.h>\n");
+    if needs_ft {
+        out.push_str("#include \"foreign_types.h\"\n");
+    }
     for inc in includes {
         out.push_str(&format!("#include <{}>\n", inc));
     }
     out.push('\n');
+
+    // Inventory struct typedefs — appear in header, usable across all .c files
+    for s in structs {
+        out.push_str(&emit_struct_c(s));
+        out.push('\n');
+    }
 
     for (filename, sf) in source_files {
         out.push_str(&format!("/* {} */\n", filename));
@@ -77,7 +116,7 @@ pub fn emit_main_c(file: &SourceFile, header_name: &str) -> String {
 /// Emit a Makefile for the generated C project.
 pub fn emit_makefile(
     crate_name:   &str,
-    source_files: &[String],   // .c filenames without path
+    source_files: &[String],
     has_main:     bool,
 ) -> String {
     let objects: Vec<String> = source_files.iter()
@@ -195,8 +234,23 @@ pub fn emit_expr_c(expr: &Expr) -> String {
 
 pub fn emit_atom_c(atom: &Atom) -> String {
     match atom {
-        Atom::Ident(s)            => s.clone(),
-        Atom::Integer(n)          => n.to_string(),
+        Atom::Ident(s)         => s.clone(),
+        Atom::Integer(n)       => n.to_string(),
+        Atom::StringLit(s)     => format!("\"{}\"", s),
+        Atom::Interp(template) => {
+            // C/C++: produce a snprintf call into a stack buffer.
+            // "Hello {name}!" → snprintf(buf, sizeof(buf), "Hello %s!", name)
+            let (fmt_str, vars) = interp_to_printf(template);
+            if vars.is_empty() {
+                format!("\"{}\"", fmt_str)
+            } else {
+                let args = vars.join(", ");
+                // Emit as a compound-literal char array expression.
+                // Caller is responsible for storage if used as an lvalue.
+                format!("({{ static char _buf[1024]; snprintf(_buf, sizeof(_buf), \"{}\", {}); _buf; }})",
+                    fmt_str, args)
+            }
+        }
         Atom::Call { name, args } => {
             let args_str = args.iter().map(|a| match a {
                 CallArg::Value(s)     => s.clone(),
@@ -205,6 +259,38 @@ pub fn emit_atom_c(atom: &Atom) -> String {
             format!("{}({})", name, args_str)
         }
     }
+}
+
+/// Convert an interpolation template to a (printf_fmt, var_names) pair.
+/// `"Hello {name}!"` → `("Hello %s!", ["name"])`
+fn interp_to_printf(template: &str) -> (String, Vec<&str>) {
+    let mut fmt_str = String::new();
+    let mut vars    = Vec::new();
+    let mut rest    = template;
+    while !rest.is_empty() {
+        if let Some(open) = rest.find('{') {
+            fmt_str.push_str(&rest[..open]);
+            let after = &rest[open+1..];
+            if let Some(close) = after.find('}') {
+                let name = &after[..close];
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    fmt_str.push_str("%s");
+                    vars.push(name);
+                    rest = &after[close+1..];
+                } else {
+                    fmt_str.push('{');
+                    rest = after;
+                }
+            } else {
+                fmt_str.push_str(&rest[open..]);
+                break;
+            }
+        } else {
+            fmt_str.push_str(rest);
+            break;
+        }
+    }
+    (fmt_str, vars)
 }
 
 // ── Type mapping: Bullang → C ─────────────────────────────────────────────────
@@ -244,10 +330,13 @@ fn rust_type_to_c(s: &str) -> String {
 }
 
 fn translate_c_generic(s: &str) -> String {
-    // Vec<T> → T*  (pointer to array — caller manages memory)
+    // Vec[T] → vec_t  (foreign_types.h dynamic array)
     if s.starts_with("Vec[") && s.ends_with(']') {
-        let inner = &s[4..s.len()-1];
-        return format!("{}*", rust_type_to_c(inner));
+        return "vec_t".to_string();
+    }
+    // HashMap[K, V] → map_t  (foreign_types.h hash map, string keys)
+    if s.starts_with("HashMap[") && s.ends_with(']') {
+        return "map_t".to_string();
     }
     // &T → T*
     if s.starts_with('&') {
@@ -259,12 +348,12 @@ fn translate_c_generic(s: &str) -> String {
         let inner = s[4..].trim();
         return format!("{}*", rust_type_to_c(inner));
     }
-    // Option<T> → T  (C has no Option; use pointer for nullable)
+    // Option<T> → T*  (nullable pointer)
     if s.starts_with("Option[") && s.ends_with(']') {
         let inner = &s[7..s.len()-1];
         return format!("{}*  /* nullable */", rust_type_to_c(inner));
     }
-    // fn(T) -> U → function pointer
+    // Fn[...] → function pointer
     if s.starts_with("Fn[") {
         return "void*  /* fn ptr */".to_string();
     }

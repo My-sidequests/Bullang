@@ -177,6 +177,13 @@ fn infer_expr(
             if lhs_ty == BuType::Unknown || rhs_ty == BuType::Unknown {
                 return BuType::Unknown;
             }
+
+            // Allow String + String as concatenation
+            let string_ty = BuType::Named("String".to_string());
+            if b.op == "+" && lhs_ty == string_ty && rhs_ty == string_ty {
+                return string_ty;
+            }
+
             if lhs_ty != rhs_ty {
                 errors.push(terr(path, span, format!(
                     "Function '{}': operator '{}' requires both sides to be the same type \
@@ -214,8 +221,10 @@ fn infer_atom(
     errors:      &mut Vec<TypeError>,
 ) -> BuType {
     match atom {
-        Atom::Integer(_)  => BuType::Unknown,
-        Atom::Ident(name) => local.get(name).cloned().unwrap_or(BuType::Unknown),
+        Atom::Integer(_)   => BuType::Unknown,
+        Atom::StringLit(_) => BuType::Named("String".to_string()),
+        Atom::Interp(_)    => BuType::Named("String".to_string()),
+        Atom::Ident(name)  => local.get(name).cloned().unwrap_or(BuType::Unknown),
 
         Atom::Call { name, args } => {
             if is_skirmish { return BuType::Unknown; }

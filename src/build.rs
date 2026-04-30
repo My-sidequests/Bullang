@@ -23,8 +23,6 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
     let mut errors        = Vec::new();
     let mut files_written = 0;
 
-    // Python: package dir named after the crate so imports work.
-    // Rust: conventional src/ layout.
     let src_out = match backend {
         Backend::Python => out_dir.join(crate_name),
         Backend::Go | Backend::C | Backend::Cpp => out_dir.to_path_buf(),
@@ -38,11 +36,14 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         root, &src_out, backend, crate_name, has_main, &mut errors, &mut files_written,
     );
 
+    // Collect all structs from all inventories in the tree
+    let all_structs = collect_all_structs(root);
+
     match backend {
         Backend::Rust => {
             write_file(
                 &src_out.join("lib.rs"),
-                &codegen::emit_lib_rs(&child_modules),
+                &codegen::emit_lib_rs(&child_modules, &all_structs),
                 &mut files_written,
             );
             let cargo = if has_main {
@@ -55,18 +56,27 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         Backend::Python => {
             write_file(
                 &src_out.join("__init__.py"),
-                &codegen::emit_init_py(&child_modules),
+                &codegen::emit_init_py(&child_modules, &all_structs),
                 &mut files_written,
             );
         }
         Backend::C => {
-            let header_name  = format!("{}.h", crate_name);
-            let all_sources  = collect_all_sources(root);
+            let header_name = format!("{}.h", crate_name);
+            let all_sources = collect_all_sources(root);
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
-            let libs = collect_all_libs(root);
-            let header = codegen::emit_header_c(crate_name, &src_refs, &libs);
+            let libs   = collect_all_libs(root);
+            let header = codegen::emit_header_c(crate_name, &src_refs, &libs, &all_structs);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
+
+            let needs_ft = src_refs.iter().any(|(_, sf)| codegen::needs_foreign_types(sf));
+            if needs_ft {
+                write_file(
+                    &out_dir.join("foreign_types.h"),
+                    include_str!("foreign_types.h"),
+                    &mut files_written,
+                );
+            }
 
             let mut all_c: Vec<String> = child_modules.iter()
                 .map(|m| format!("{}.c", m)).collect();
@@ -75,12 +85,12 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
             write_file(&out_dir.join("Makefile"), &makefile, &mut files_written);
         }
         Backend::Cpp => {
-            let header_name  = format!("{}.hpp", crate_name);
-            let all_sources  = collect_all_sources(root);
+            let header_name = format!("{}.hpp", crate_name);
+            let all_sources = collect_all_sources(root);
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
-            let libs = collect_all_libs(root);
-            let header = codegen::emit_header_cpp(crate_name, &src_refs, crate_name, &libs);
+            let libs   = collect_all_libs(root);
+            let header = codegen::emit_header_cpp(crate_name, &src_refs, crate_name, &libs, &all_structs);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
 
             let mut all_cpp: Vec<String> = child_modules.iter()
@@ -91,6 +101,20 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         }
         Backend::Go => {
             write_file(&out_dir.join("go.mod"), &codegen::emit_go_mod(crate_name), &mut files_written);
+
+            // types.go — inventory structs + Tuple foreign types
+            let all_sources = collect_all_sources(root);
+            let src_refs: Vec<(String, &crate::ast::SourceFile)> =
+                all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
+            let tuple_types = codegen::collect_tuple_types(&src_refs);
+            if !all_structs.is_empty() || !tuple_types.is_empty() {
+                let pkg = if has_main { "main" } else { crate_name };
+                write_file(
+                    &out_dir.join("types.go"),
+                    &codegen::emit_types_go(pkg, &all_structs, &tuple_types),
+                    &mut files_written,
+                );
+            }
         }
         Backend::Unknown(_) => {}
     }
@@ -397,6 +421,27 @@ fn collect_all_libs(dir: &Path) -> Vec<String> {
 
 /// Walk the entire source tree and collect (stem_name, SourceFile) for every
 /// .bu source file. Used by C/C++ header generation to produce forward decls.
+fn collect_all_structs(dir: &Path) -> Vec<crate::ast::StructDef> {
+    let mut result = Vec::new();
+    let inv = match read_inventory(dir) {
+        Ok(i) => i, Err(_) => return result,
+    };
+    // Deduplicate by name — a struct defined in a child propagates up
+    for s in inv.structs {
+        if !result.iter().any(|r: &crate::ast::StructDef| r.name == s.name) {
+            result.push(s);
+        }
+    }
+    for subdir in collect_subdirs(dir) {
+        for s in collect_all_structs(&subdir) {
+            if !result.iter().any(|r: &crate::ast::StructDef| r.name == s.name) {
+                result.push(s);
+            }
+        }
+    }
+    result
+}
+
 fn collect_all_sources(dir: &Path) -> Vec<(String, crate::ast::SourceFile)> {
     let mut result = Vec::new();
     let inv = match read_inventory(dir) {

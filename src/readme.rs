@@ -30,12 +30,12 @@ r#"# Bullang — Quick-start README
 
 ## What is Bullang?
 
-Bullang (`.bu`) is a structured transpiler language.  You write plain, typed
+Bullang (`.bu`) is a structured transpiler language. You write plain, typed
 source files in a military-themed folder hierarchy, and `bullang convert`
 produces clean, compilable code in your target language (Rust, Python, C, C++,
 or Go).
 
-The idea is simple: **hierarchy first, then code**.  Every folder has a *rank*
+The idea is simple: **hierarchy first, then code**. Every folder has a *rank*
 that controls what it may contain and how it is compiled.
 
 ---
@@ -51,51 +51,101 @@ that controls what it may contain and how it is compiled.
 | `theater`  | 5     | Groups several battles            |
 | `war`      | 6     | Top-level root of a large project |
 
-A folder at depth 2 (`--depth 2`) is a `tactic` folder that contains
-`skirmish` sub-folders.  Each folder must contain an `inventory.bu` file.
-
 ---
 
 ## The inventory file
 
-Every folder has an `inventory.bu` that describes it:
+Every folder has an `inventory.bu` that describes it entirely.
 
 ```
 #rank: skirmish;
 #lang: rs;
-#include: utils;
+#lib: stdio.h;
+
+struct Point {
+    x: i32,
+    y: f64,
+}
+
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+}
 
 math    : add, subtract;
 helpers : clamp, abs_val;
 ```
 
-Key directives:
+### Directives
 
-| Directive   | Meaning                                              |
-|-------------|------------------------------------------------------|
-| `#rank:`    | The rank of *this* folder (required)                 |
-| `#lang:`    | Target language: `rs` `py` `c` `cpp` `go`            |
-| `#lib:`     | C/C++ header to include (repeatable)                 |
+| Directive | Meaning                                         |
+|-----------|-------------------------------------------------|
+| `#rank:`  | The rank of *this* folder (required)            |
+| `#lang:`  | Target language: `rs` `py` `c` `cpp` `go`       |
+| `#lib:`   | C/C++ header to include (repeatable)            |
 
-Each line after the directives is an inventory entry: `filename: fn1, fn2;`
-Every `.bu` source file in the folder must be listed, and every function
-in that file must be named.
+### Struct definitions
+
+Structs are declared **directly in `inventory.bu`** — never in source files.
+This places type definitions in the manifest layer, so they appear in the
+right output file (`.h`, `.hpp`, `lib.rs`, `__init__.py`, `types.go`) rather
+than in an implementation file.
+
+**Rank rule:** A struct defined in a child folder's inventory can be used
+in that child's source files and in the parent folder's inventory or source
+files. You cannot use a struct from a sibling or parent inventory. This
+mirrors the function call rule exactly — both functions and types must come
+from below, never from the side or above.
+
+```
+// skirmish/inventory.bu — defines the building blocks
+#rank: skirmish;
+
+struct Vec2 {
+    x: f32,
+    y: f32,
+}
+
+math : dot_product, magnitude;
+
+
+// tactic/inventory.bu — composes with Vec2 from the child skirmish
+#rank: tactic;
+
+struct Transform {
+    position: Vec2,   // Vec2 comes from the child skirmish — valid
+    scale:    f32,
+}
+
+physics : apply_transform, lerp;
+```
+
+The validator enforces both directions at build time. Field types must be
+primitives or struct types declared in a child inventory.
+
+### Inventory entries
+
+Each line after structs is a source file entry:
+
+```
+filename : fn1, fn2, fn3;
+```
+
+Every `.bu` source file in the folder must be listed. Every function in that
+file must be named. The validator cross-checks both directions.
 
 ---
 
 ## Source files
 
-A `.bu` source file contains function declarations.  Every function uses
-the **pipe** (`bullet`) syntax — a chain of named steps where each step
-consumes inputs and produces a binding:
+Source files contain **only function declarations** — no structs, no metadata.
 
 ```
-// A simple function — one bullet
 let add(a: i32, b: i32) -> result: i32 {
     (a, b) : a + b -> {result};
 }
 
-// Two bullets: intermediate binding consumed by the next step
 let scale_and_add(x: i32, y: i32, factor: i32) -> result: i32 {
     (x, factor) : x * factor -> {scaled};
     (scaled, y) : scaled + y -> {result};
@@ -112,37 +162,58 @@ Rules:
 
 ---
 
-### Types
+## Types
 
-| Bullang type    | Maps to (Rust / Python / C)                |
-|-----------------|--------------------------------------------|
-| `i32`, `i64`    | `i32` / `int` / `int32_t`                  |
-| `f64`           | `f64` / `float` / `double`                 |
-| `String`        | `String` / `str` / `char *`                |
-| `bool`          | `bool` / `bool` / `int`                    |
-| `Vec[T]`        | `Vec<T>` / `list` / unsupported            |
-| `Option[T]`     | `Option<T>` / `Optional[T]` / unsupported  |
-| `Tuple[T, U]`   | `(T, U)` / `tuple` / unsupported           |
+| Bullang type    | Rust          | Python          | Go ²           | C               | C++                       |
+|-----------------|---------------|-----------------|----------------|-----------------|---------------------------|
+| `i32`, `i64`    | `i32`/`i64`   | `int`           | `int32`/`int64`| `int32_t`       | `int32_t`                 |
+| `f64`           | `f64`         | `float`         | `float64`      | `double`        | `double`                  |
+| `String`        | `String`      | `str`           | `string`       | `char *`        | `std::string`             |
+| `bool`          | `bool`        | `bool`          | `bool`         | `bool`          | `bool`                    |
+| `Vec[T]`        | `Vec<T>`      | `list`          | `[]T`          | `vec_t` ¹       | `std::vector<T>`          |
+| `HashMap[K, V]` | `HashMap<K,V>`| `dict`          | `map[K]V`      | `map_t` ¹       | `std::unordered_map<K,V>` |
+| `Option[T]`     | `Option<T>`   | `Optional[T]`   | `*T`           | `T*`            | `std::optional<T>`        |
+| `Tuple[T, U]`   | `(T, U)`      | `tuple`         | `Tuple_T_U` ²  | N/A             | `std::tuple<T, U>`        |
+| `UserStruct`    | `pub struct`  | `@dataclass`    | `struct`       | `typedef struct`| `struct`                  |
+
+¹ C projects using `Vec[T]` or `HashMap[K,V]` automatically get a
+`foreign_types.h` emitted alongside the output. `map_t` uses string keys only.
+
+² Go has no built-in tuple type. Bullang emits a named struct per unique Tuple
+combination into `types.go`. `Tuple[i32, f64]` becomes `Tuple_i32_f64` with
+fields `V0 int32` and `V1 float64`. Inventory structs are also emitted there.
 
 ---
 
-### Native escape blocks
+## String interpolation
 
-When you need to drop down to the target language directly, use a native block.
-The backend keyword follows `@` and the block ends with `@end`:
+Strings containing `{identifier}` placeholders are automatically interpolated:
+
+```
+let greet(name: String) -> result: String {
+    () : "Hello {name}!" -> {result};
+}
+```
+
+Each backend resolves interpolation natively:
+
+| Backend | Output                                          |
+|---------|-------------------------------------------------|
+| Rust    | `format!("Hello {name}!")`                      |
+| Python  | `f"Hello {name}!"`                              |
+| Go      | `fmt.Sprintf("Hello %v!", name)` (auto-import)  |
+| C/C++   | `snprintf(buf, sizeof(buf), "Hello %s!", name)` |
+
+---
+
+## Native escape blocks
+
+When you need to drop down to the target language directly:
 
 ```
 let sum_vec(values: Vec[i32]) -> result: i32 {
     @rust
     values.iter().sum()
-    @end
-}
-```
-
-```
-let greet(name: String) -> result: String {
-    @python
-    result = f"Hello, {name}!"
     @end
 }
 ```
@@ -155,74 +226,66 @@ Only the block matching the active backend is emitted; all others are ignored.
 
 ## Standard library (`builtin::`)
 
-Call a builtin by writing its name as the sole statement in a function body.
-The function's parameters are forwarded automatically.
-
 ```
 let absolute(x: i32) -> result: i32 {
     builtin::abs
 }
-
-let shout(s: String) -> result: String {
-    builtin::to_upper
-}
 ```
-
-Run `bullang stdlib` to see all available builtins with their signatures.
 
 | Category | Builtins |
 |----------|----------|
 | Math     | `abs` `pow` `powf` `sqrt` `clamp` |
 | String   | `to_upper` `to_lower` `trim` `starts_with` `ends_with` `replace_str` `to_string` `parse_i64` |
 
+Run `bullang stdlib` for full signatures and parameter counts.
+
+---
+
+## Test functions
+
+Annotate any function with `#test` to register it as a test.
+Test functions take no parameters and return `bool`:
+
+```
+#test
+let test_add() -> result: bool {
+    (2, 3) : 2 + 3 -> {sum};
+    (sum)  : sum == 5 -> {result};
+}
+```
+
+Run all tests with:
+
+```sh
+bullang test
+bullang test --ext py
+```
+
+Tests are never included in `bullang convert` output.
+
 ---
 
 ## CLI reference
 
-| Command                                  | What it does                                     |
-|------------------------------------------|--------------------------------------------------|
-| `bullang init <name>`                    | Scaffold a new project (depth 2 by default)      |
-| `bullang init <name> --depth 4`          | Scaffold with a custom hierarchy depth           |
-| `bullang init <name> --blueprint f.bu`   | Init from a blueprint file                       |
-| `bullang convert <folder>`               | Transpile the project to the declared `#lang`    |
-| `bullang convert <folder> -e py`         | Override target language                         |
-| `bullang convert file.bu`                | Transpile a single file to stdout                |
-| `bullang check`                          | Validate & type-check without converting         |
-| `bullang stdlib`                         | List all builtin functions                       |
-| `bullang lsp`                            | Start the LSP server (used by editor plugins)    |
-| `bullang editor-setup`                   | Write LSP config for Neovim / Helix / Emacs      |
-| `bullang update`                         | Pull & reinstall from main branch                |
-| `bullang update --experimental`          | Pull & reinstall from experimental branch        |
-| `bullang install`                        | Install bullang to `~/.cargo/bin`                |
-
----
-
-## Blueprint files
-
-A blueprint (`.bu`) describes a complete project structure in one file so you
-can share project templates:
-
-```
-#lang: rs
-
-war my_project {
-    theater engine {
-        battle physics {
-            strategy dynamics {
-                tactic forces {
-                    skirmish gravity {}
-                }
-            }
-        }
-    }
-}
-```
-
-Init from a blueprint with:
-
-```sh
-bullang init my_project --blueprint blueprint.bu
-```
+| Command                                  | What it does                                      |
+|------------------------------------------|---------------------------------------------------|
+| `bullang init <name>`                    | Scaffold a new project (depth 2 by default)       |
+| `bullang init <name> --depth 4`          | Scaffold with a custom hierarchy depth            |
+| `bullang init <name> --blueprint f.bu`   | Init from a blueprint file                        |
+| `bullang convert <folder>`               | Transpile the project to the declared `#lang`     |
+| `bullang convert <folder> -e py`         | Override target language                          |
+| `bullang convert file.bu`                | Transpile a single file to stdout                 |
+| `bullang test`                           | Run all `#test` functions                         |
+| `bullang test --ext py`                  | Run tests against a specific backend              |
+| `bullang check`                          | Validate, type-check, and verify formatting   |
+| `bullang fmt`                            | Format all .bu files to canonical style       |
+| `bullang fmt --dry-run`                 | Show what would change without writing        |
+| `bullang stdlib`                         | List all builtin functions                        |
+| `bullang lsp`                            | Start the LSP server (used by editor plugins)     |
+| `bullang editor-setup`                   | Write LSP config for Neovim / Helix / Emacs       |
+| `bullang update`                         | Pull & reinstall from main branch                 |
+| `bullang update --experimental`          | Pull & reinstall from experimental branch         |
+| `bullang install`                        | Install bullang to `~/.cargo/bin`                 |
 
 ---
 
@@ -232,16 +295,21 @@ bullang init my_project --blueprint blueprint.bu
 # 1. Create a project
 bullang init my_project --depth 3 --lang rs
 
-# 2. Edit the generated .bu files in your editor
-#    (LSP diagnostics work if you ran `bullang editor-setup`)
+# 2. Define structs in each folder's inventory.bu
+#    (structs from child folders are available to parent folders)
 
-# 3. Validate before converting
+# 3. Write function bodies in .bu source files
+
+# 4. Run tests while developing
+bullang test
+
+# 5. Validate before converting
 bullang check
 
-# 4. Transpile — this README is deleted automatically
+# 6. Transpile — this README is deleted automatically
 bullang convert my_project
 
-# 5. Compile / run the output
+# 7. Compile / run the output
 cd _my_project && cargo build
 ```
 

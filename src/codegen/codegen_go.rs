@@ -27,7 +27,6 @@ pub fn emit_source_go(file: &SourceFile, package: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("package {}\n\n", pkg));
 
-    // Collect imports needed by this file
     let imports = needed_imports(file);
     if !imports.is_empty() {
         out.push_str("import (\n");
@@ -39,6 +38,82 @@ pub fn emit_source_go(file: &SourceFile, package: &str) -> String {
         out.push_str(&emit_function_go(func));
         out.push('\n');
     }
+    out
+}
+
+/// Emit `types.go` — contains all inventory struct definitions and any
+/// Tuple named structs needed as foreign type equivalents.
+/// Called by build.rs whenever there are structs or Tuple types in the project.
+pub fn emit_types_go(package: &str, structs: &[crate::ast::StructDef], tuple_types: &[Vec<crate::ast::BuType>]) -> String {
+    let pkg = sanitize_go_pkg(package);
+    let mut out = String::new();
+    out.push_str(&format!("package {}\n\n", pkg));
+
+    for s in structs {
+        out.push_str(&emit_struct_go(s));
+        out.push('\n');
+    }
+
+    // Tuple foreign types — named structs derived from type combinations
+    for inner in tuple_types {
+        let type_name = tuple_go_name(inner);
+        out.push_str(&format!("type {} struct {{\n", type_name));
+        for (i, ty) in inner.iter().enumerate() {
+            out.push_str(&format!("\tV{} {}\n", i, bu_type_to_go(ty)));
+        }
+        out.push_str("}\n\n");
+    }
+
+    out
+}
+
+/// Generate a stable Go type name for a Tuple from its inner types.
+/// `Tuple[i32, f64]` → `Tuple_i32_f64`
+pub fn tuple_go_name(inner: &[crate::ast::BuType]) -> String {
+    let parts: Vec<String> = inner.iter().map(|t| {
+        bu_type_to_go(t)
+            .replace(['<', '>', '[', ']', ' ', ','], "_")
+            .trim_matches('_')
+            .to_string()
+    }).collect();
+    format!("Tuple_{}", parts.join("_"))
+}
+
+/// Collect all unique Tuple type combinations used across all source files.
+pub fn collect_tuple_types(source_files: &[(String, &SourceFile)]) -> Vec<Vec<crate::ast::BuType>> {
+    use crate::ast::BuType;
+    let mut seen: Vec<Vec<BuType>> = Vec::new();
+
+    fn scan_type(ty: &BuType, seen: &mut Vec<Vec<BuType>>) {
+        if let BuType::Tuple(inner) = ty {
+            if !seen.contains(inner) {
+                seen.push(inner.clone());
+            }
+        }
+        if let BuType::Named(s) = ty {
+            // Tuple[T, U] written as a Named variant
+            if s.starts_with("Tuple[") && s.ends_with(']') {
+                // parse inner types — handled at codegen via bu_type_to_go
+                // just register the raw string as a single-element placeholder
+            }
+        }
+    }
+
+    for (_, sf) in source_files {
+        for func in &sf.bullets {
+            for param in &func.params { scan_type(&param.ty, &mut seen); }
+            scan_type(&func.output.ty, &mut seen);
+        }
+    }
+    seen
+}
+    let mut out = String::new();
+    out.push_str(&format!("type {} struct {{\n", to_pascal_case(&s.name)));
+    for field in &s.fields {
+        out.push_str(&format!("\t{} {}\n",
+            to_pascal_case(&field.name), bu_type_to_go(&field.ty)));
+    }
+    out.push_str("}\n");
     out
 }
 
@@ -108,18 +183,34 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
                 }
             }
             BulletBody::Native { backend: Backend::Go, code } => {
-                if code.contains("sort.") { push_unique(&mut imports, "sort"); }
+                if code.contains("sort.")    { push_unique(&mut imports, "sort"); }
                 if code.contains("strings.") { push_unique(&mut imports, "strings"); }
-                if code.contains("math.") { push_unique(&mut imports, "math"); }
-                if code.contains("fmt.") { push_unique(&mut imports, "fmt"); }
+                if code.contains("math.")    { push_unique(&mut imports, "math"); }
+                if code.contains("fmt.")     { push_unique(&mut imports, "fmt"); }
                 if code.contains("strconv.") { push_unique(&mut imports, "strconv"); }
-                if code.contains("os.") { push_unique(&mut imports, "os"); }
-                if code.contains("bufio.") { push_unique(&mut imports, "bufio"); }
+                if code.contains("os.")      { push_unique(&mut imports, "os"); }
+                if code.contains("bufio.")   { push_unique(&mut imports, "bufio"); }
+            }
+            BulletBody::Pipes(pipes) => {
+                // fmt.Sprintf needed whenever any pipe expression uses Interp
+                if pipes.iter().any(|p| pipe_has_interp(&p.expr)) {
+                    push_unique(&mut imports, "fmt");
+                }
             }
             _ => {}
         }
     }
     imports.iter().map(|s| s.to_string()).collect()
+}
+
+fn pipe_has_interp(expr: &crate::ast::Expr) -> bool {
+    use crate::ast::{Expr, Atom};
+    match expr {
+        Expr::Atom(Atom::Interp(_))     => true,
+        Expr::Atom(_)                   => false,
+        Expr::BinOp(b)                  => matches!(&b.lhs, Atom::Interp(_)) || matches!(&b.rhs, Atom::Interp(_)),
+        Expr::Tuple(exprs)              => exprs.iter().any(pipe_has_interp),
+    }
 }
 
 fn push_unique(v: &mut Vec<&'static str>, s: &'static str) {
@@ -232,8 +323,18 @@ fn emit_expr_go(expr: &Expr) -> String {
 
 fn emit_atom_go(atom: &Atom) -> String {
     match atom {
-        Atom::Ident(s)            => s.clone(),
-        Atom::Integer(n)          => n.to_string(),
+        Atom::Ident(s)         => s.clone(),
+        Atom::Integer(n)       => n.to_string(),
+        Atom::StringLit(s)     => format!("\"{}\"", s),
+        Atom::Interp(template) => {
+            // Go uses fmt.Sprintf with %v for each interpolated variable.
+            let (fmt_str, vars) = interp_to_sprintf(template);
+            if vars.is_empty() {
+                format!("\"{}\"", fmt_str)
+            } else {
+                format!("fmt.Sprintf(\"{}\", {})", fmt_str, vars.join(", "))
+            }
+        }
         Atom::Call { name, args } => {
             let go_name  = to_pascal_case(name);
             let args_str = args.iter().map(|a| match a {
@@ -245,17 +346,44 @@ fn emit_atom_go(atom: &Atom) -> String {
     }
 }
 
+/// Convert an interpolation template to a (fmt_string, var_names) pair for Sprintf.
+/// `"Hello {name}!"` → `("Hello %v!", ["name"])`
+fn interp_to_sprintf(template: &str) -> (String, Vec<&str>) {
+    let mut fmt_str = String::new();
+    let mut vars    = Vec::new();
+    let mut rest    = template;
+    while !rest.is_empty() {
+        if let Some(open) = rest.find('{') {
+            fmt_str.push_str(&rest[..open]);
+            let after = &rest[open+1..];
+            if let Some(close) = after.find('}') {
+                let name = &after[..close];
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    fmt_str.push_str("%v");
+                    vars.push(name);
+                    rest = &after[close+1..];
+                } else {
+                    fmt_str.push('{');
+                    rest = after;
+                }
+            } else {
+                fmt_str.push_str(&rest[open..]);
+                break;
+            }
+        } else {
+            fmt_str.push_str(rest);
+            break;
+        }
+    }
+    (fmt_str, vars)
+}
+
 // ── Type mapping ──────────────────────────────────────────────────────────────
 
 pub fn bu_type_to_go(ty: &BuType) -> String {
     match ty {
         BuType::Named(s)     => rust_type_to_go(s),
-        BuType::Tuple(inner) => {
-            let fields = inner.iter().enumerate()
-                .map(|(i, t)| format!("V{} {}", i, bu_type_to_go(t)))
-                .collect::<Vec<_>>().join("; ");
-            format!("struct{{ {} }}", fields)
-        }
+        BuType::Tuple(inner) => tuple_go_name(inner),
         BuType::Array(t, n)  => format!("[{}]{}", n, bu_type_to_go(t)),
         BuType::Unknown      => "interface{}".to_string(),
     }
@@ -289,6 +417,15 @@ fn rust_type_to_go(s: &str) -> String {
 fn translate_go_generic(s: &str) -> String {
     if s.starts_with("Vec[") && s.ends_with(']') {
         return format!("[]{}", rust_type_to_go(&s[4..s.len()-1]));
+    }
+    if s.starts_with("HashMap[") && s.ends_with(']') {
+        let inner = &s[8..s.len()-1];
+        let parts: Vec<&str> = inner.splitn(2, ',').collect();
+        if parts.len() == 2 {
+            return format!("map[{}]{}",
+                rust_type_to_go(parts[0].trim()),
+                rust_type_to_go(parts[1].trim()));
+        }
     }
     if s.starts_with("Option[") && s.ends_with(']') {
         return format!("*{}", rust_type_to_go(&s[7..s.len()-1]));

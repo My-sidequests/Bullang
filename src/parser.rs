@@ -86,7 +86,6 @@ pub fn parse_file_tolerant(source: &str, file_path: &str) -> ParseResult {
                 bullets.extend(sf.bullets);
             }
             Err(e) => {
-                // Adjust line numbers by the chunk's offset in the original file
                 let (line, col) = pest_error_location(&e);
                 let adjusted_line = line + line_offset.saturating_sub(1);
                 errors.push(ParseError {
@@ -226,12 +225,33 @@ fn parse_source(pair: Pair<Rule>) -> SourceFile {
     SourceFile { bullets }
 }
 
+// ── Struct definition ─────────────────────────────────────────────────────────
+
+fn parse_struct_def(pair: Pair<Rule>) -> crate::ast::StructDef {
+    let mut inner = pair.into_inner();
+    let name      = inner.next().unwrap().as_str().to_string();
+    // struct_fields contains struct_field* children
+    let fields_pair = inner.next().unwrap();
+    let fields = fields_pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::struct_field)
+        .map(|p| {
+            let mut fi = p.into_inner();
+            crate::ast::StructField {
+                name: fi.next().unwrap().as_str().to_string(),
+                ty:   parse_ty(fi.next().unwrap()),
+            }
+        })
+        .collect();
+    crate::ast::StructDef { name, fields }
+}
+
 // ── Inventory file ────────────────────────────────────────────────────────────
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     let mut rank    = None;
     let mut lang    = None;
     let mut libs    = Vec::new();
+    let mut structs = Vec::new();
     let mut entries = Vec::new();
 
     for inner in pair.into_inner() {
@@ -247,6 +267,9 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
                 let name = inner.into_inner().next().unwrap().as_str().trim().to_string();
                 libs.push(name);
             }
+            Rule::struct_def => {
+                structs.push(parse_struct_def(inner));
+            }
             Rule::inv_entry => {
                 let mut ci    = inner.into_inner();
                 let file      = ci.next().unwrap().as_str().to_string();
@@ -259,9 +282,10 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     }
 
     InventoryFile {
-        rank:    rank.expect("inventory.bu is missing #rank"),
+        rank: rank.expect("inventory.bu is missing #rank"),
         lang,
         libs,
+        structs,
         entries,
     }
 }
@@ -271,11 +295,17 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
 fn parse_bullet(pair: Pair<Rule>) -> Bullet {
     let bullet_span = span_of(&pair);
     let mut inner   = pair.into_inner();
-    let name        = inner.next().unwrap().as_str().to_string();
-    let params      = parse_param_list(inner.next().unwrap());
-    let output      = parse_output_decl(inner.next().unwrap());
-    let body        = parse_bullet_body(inner.next().unwrap());
-    Bullet { name, params, output, body, span: bullet_span }
+
+    // Optional #test annotation
+    let first    = inner.next().unwrap();
+    let is_test  = first.as_rule() == Rule::test_ann;
+    let name_pair = if is_test { inner.next().unwrap() } else { first };
+
+    let name   = name_pair.as_str().to_string();
+    let params = parse_param_list(inner.next().unwrap());
+    let output = parse_output_decl(inner.next().unwrap());
+    let body   = parse_bullet_body(inner.next().unwrap());
+    Bullet { name, params, output, body, span: bullet_span, is_test }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {
@@ -394,10 +424,42 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
             let args   = ci.map(parse_call_arg).collect();
             Atom::Call { name, args }
         }
-        Rule::integer => Atom::Integer(inner.as_str().parse().unwrap()),
-        Rule::ident   => Atom::Ident(inner.as_str().to_string()),
+        Rule::integer    => Atom::Integer(inner.as_str().parse().unwrap()),
+        Rule::ident      => Atom::Ident(inner.as_str().to_string()),
+        Rule::string_lit => parse_string_atom(inner.as_str()),
         other => unreachable!("unexpected atom: {:?}", other),
     }
+}
+
+/// Strip the outer quotes from a string literal and decide whether it contains
+/// `{ident}` interpolation placeholders.
+fn parse_string_atom(raw: &str) -> Atom {
+    // raw includes the surrounding quotes: "hello {name}"
+    let content = &raw[1..raw.len()-1];
+    if has_interp_vars(content) {
+        Atom::Interp(content.to_string())
+    } else {
+        Atom::StringLit(content.to_string())
+    }
+}
+
+/// True if the string contains at least one `{ident}` placeholder.
+fn has_interp_vars(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let ident_chars: String = chars.by_ref()
+                .take_while(|&x| x != '}')
+                .collect();
+            if !ident_chars.is_empty()
+                && ident_chars.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false)
+                && ident_chars.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
@@ -406,8 +468,9 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
         Rule::bullet_ref => CallArg::BulletRef(
             inner.into_inner().next().unwrap().as_str().to_string()
         ),
-        Rule::integer => CallArg::Value(inner.as_str().to_string()),
-        Rule::ident   => CallArg::Value(inner.as_str().to_string()),
+        Rule::integer    => CallArg::Value(inner.as_str().to_string()),
+        Rule::ident      => CallArg::Value(inner.as_str().to_string()),
+        Rule::string_lit => CallArg::Value(inner.as_str().to_string()), // keep quoted
         other => unreachable!("unexpected call_arg: {:?}", other),
     }
 }

@@ -30,14 +30,19 @@ ty              = { ty_unit | ty_tuple | ty_array | ty_fn | ty_ref_mut | ty_ref 
 // ── Binding  {name} ───────────────────────────────────────────────────────────
 binding = { "{" ~ ident ~ "}" }
 
+// ── String literals ───────────────────────────────────────────────────────────
+// Stored verbatim (quotes included) by the @-atomic rule so escape sequences
+// and interpolation placeholders are preserved exactly as written.
+string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
 // ── Call arguments ────────────────────────────────────────────────────────────
 bullet_ref = { "&" ~ ident }
-call_arg   = { bullet_ref | integer | ident }
+call_arg   = { bullet_ref | integer | string_lit | ident }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 op         = { "+" | "-" | "*" | "/" | "%" }
 call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
-atom       = { call | integer | ident }
+atom       = { call | integer | string_lit | ident }
 expr       = { atom ~ (op ~ atom)* }
 tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 pipe_val   = { tuple_expr | expr }
@@ -71,20 +76,26 @@ param_list  = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 output_decl = { "->" ~ ident ~ ":" ~ ty }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
-bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
+// ── Test annotation ───────────────────────────────────────────────────────────
+test_ann = { "#test" }
 
-// ── Source file: pure bullet declarations, no metadata ───────────────────────
-source_file = { SOI ~ bullet+ ~ EOI }
+bullet = { test_ann? ~ "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
+
+// ── Struct definitions (declared in inventory.bu, not in source files) ────────
+struct_field  = { ident ~ ":" ~ ty }
+struct_fields = { struct_field ~ ("," ~ struct_field)* ~ ","? }
+struct_def    = { "struct" ~ ident ~ "{" ~ struct_fields ~ "}" }
+
+// ── Source file: only bullet declarations — no structs, no metadata ───────────
+source_file = { SOI ~ bullet* ~ EOI }
 
 // ── Inventory file ────────────────────────────────────────────────────────────
 rank_val       = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
 dir_rank       = { "#rank" ~ ":" ~ rank_val ~ ";" }
-// #lang: ext; — declares the intended target language for this project.
-// Written by `bullang init --lang <ext>` and used by `bullang convert` as default.
 lang_val       = { "rs" | "py" | "c" | "cpp" | "go" }
 dir_lang       = { "#lang" ~ ":" ~ lang_val ~ ";" }
-// #lib: header_name; — declares an external library needed by this folder.
 lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
 dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
 inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
-inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ inv_entry* ~ EOI }
+
+inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ struct_def* ~ inv_entry* ~ EOI }

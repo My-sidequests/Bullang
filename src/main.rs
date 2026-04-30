@@ -8,6 +8,7 @@ mod stdlib;
 mod typecheck;
 mod validator;
 mod cmd;
+mod fmt;
 mod readme;
 mod utils;
 
@@ -93,7 +94,43 @@ enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Run #test-annotated functions in the project.
+    ///
+    /// Examples:
+    ///
+    ///   bullang test                  (auto-detects backend from #lang)
+    ///
+    ///   bullang test --ext py         (explicit backend)
+    Test {
+        /// Path to the project to test (default: current directory)
+        folder: Option<PathBuf>,
+        /// Target language extension (default: from #lang in inventory, or rs)
+        #[arg(short = 'e', long, default_value = "rs")]
+        ext: String,
+    },
+
+    /// Format all .bu files in the project to canonical style.
+    ///
+    /// Rewrites files in place. Escape block contents are never modified.
+    /// To check formatting without writing, use `bullang check`.
+    ///
+    /// Examples:
+    ///
+    ///   bullang fmt                   (formats project from current directory)
+    ///
+    ///   bullang fmt my_project        (formats specific project folder)
+    ///
+    ///   bullang fmt --dry-run         (show what would change without writing)
+    Fmt {
+        /// Path to the project to format (default: current directory)
+        folder: Option<PathBuf>,
+        /// Show files that would be reformatted without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Validate and type-check the project from the current directory.
+    /// Also reports any files not in canonical format — run `bullang fmt` to fix.
     Check,
 
     /// Explore the standard library of builtin functions.
@@ -137,7 +174,9 @@ fn main() {
     match cli.command {
         Command::Install                                               => cmd::cmd_install(),
         Command::Init { name, depth, blueprint, lang, libs, path }    => cmd::cmd_init(name, depth, blueprint, lang, libs, path),
-        Command::Convert { folder, name, ext, out, output }           => cmd::cmd_convert(folder, name, ext, out, output),
+        Command::Convert { folder, name, ext, out, output }  => cmd::cmd_convert(folder, name, ext, out, output),
+        Command::Fmt { folder, dry_run }                                      => cmd::cmd_fmt(folder, dry_run),
+        Command::Test { folder, ext }                                          => cmd::cmd_test(folder, ext),
         Command::Check                                                 => cmd::cmd_check(),
         Command::Update { experimental }                               => cmd::cmd_update(experimental),
         Command::Stdlib { list }                                       => cmd::cmd_stdlib(list),
