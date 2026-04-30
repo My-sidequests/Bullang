@@ -154,6 +154,7 @@ fn validate_folder(dir: &Path) -> AllErrors {
                      Move your entry point to a tactic or higher rank folder."
                 ));
             }
+            all.extend_structural(inventory::validate_inventory_structs(dir, &inv, &[]));
             all.extend_structural(inventory::validate_inventory_completeness(
                 dir, &inv, &bu_files, &[],
             ));
@@ -184,6 +185,7 @@ fn validate_folder(dir: &Path) -> AllErrors {
             for subdir in &subdirs {
                 validate_child_rank(subdir, &child_rank, &mut all);
             }
+            all.extend_structural(inventory::validate_inventory_structs(dir, &inv, &subdirs));
             all.extend_structural(inventory::validate_inventory_completeness(
                 dir, &inv, &bu_files, &subdirs,
             ));
