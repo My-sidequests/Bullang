@@ -105,10 +105,23 @@ pub fn cmd_check() {
     }
 
     let type_errors = typecheck::typecheck_tree(&root);
-    if type_errors.is_empty() {
-        println!("ok -- no errors found");
-    } else {
+    if !type_errors.is_empty() {
         print_type_errors(&type_errors);
         std::process::exit(1);
     }
+
+    // Format check — report drift without writing anything
+    let unformatted = crate::cmd::cmd_fmt::check_formatting(&root);
+    if !unformatted.is_empty() {
+        eprintln!();
+        eprintln!("formatting errors — run `bullang fmt` to fix:");
+        for path in &unformatted {
+            eprintln!("  {}", path.display());
+        }
+        eprintln!();
+        eprintln!("{} file(s) not in canonical format", unformatted.len());
+        std::process::exit(1);
+    }
+
+    println!("ok -- no errors found");
 }
