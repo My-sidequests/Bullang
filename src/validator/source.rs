@@ -59,18 +59,18 @@ pub fn validate_function(
     is_skirmish: bool,
 ) -> Vec<ValidationError> {
     match &func.body {
-        BulletBody::Native { backend, .. } => {
-            match backend {
-                crate::ast::Backend::Rust       => vec![],
-                crate::ast::Backend::Python     => vec![],
-                crate::ast::Backend::C          => vec![],
-                crate::ast::Backend::Cpp        => vec![],
-                crate::ast::Backend::Go         => vec![],
-                crate::ast::Backend::Unknown(kw) => vec![ferr(path, format!(
-                    "Function '{}': '@{}' is not a supported backend. \
-                     Supported escape blocks: @rust, @python, @c, @cpp, @go.",
-                    func.name, kw
-                ))],
+        BulletBody::Natives(blocks) => {
+            match blocks.iter().find(|b| matches!(b.backend, crate::ast::Backend::Unknown(_))) {
+                Some(b) => {
+                    if let crate::ast::Backend::Unknown(kw) = &b.backend {
+                        vec![ferr(path, format!(
+                            "Function '{}': '@{}' is not a supported backend. \
+                             Supported escape blocks: @rust, @python, @c, @cpp, @go.",
+                            func.name, kw
+                        ))]
+                    } else { vec![] }
+                }
+                None => vec![],
             }
         }
         BulletBody::Builtin(name) => {
@@ -150,6 +150,10 @@ pub fn validate_bullets(
         }
 
         bound.insert(bullet.binding.clone());
+        // A `?` binding is consumed by the propagation check itself — not by a later bullet
+        if bullet.propagate {
+            consumed.insert(bullet.binding.clone());
+        }
     }
 
     for b in &bound {
