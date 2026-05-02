@@ -135,21 +135,24 @@ fn emit_body_py(out: &mut String, body: &BulletBody, params: &[Param]) {
             for (i, pipe) in pipes.iter().enumerate() {
                 let expr_str = emit_expr_py(&pipe.expr);
                 out.push_str(&format!("    {} = {}\n", pipe.binding, expr_str));
+                if pipe.propagate {
+                    // Option → return None if falsy; Result → return the error value
+                    out.push_str(&format!("    if {} is None: return None\n", pipe.binding));
+                }
                 if i == last {
                     out.push_str(&format!("    return {}\n", pipe.binding));
                 }
             }
         }
-        BulletBody::Native { backend, code } => {
-            match backend {
-                Backend::Python => {
-                    // Normalise indentation: strip common leading whitespace,
-                    // then emit each line with exactly 4 spaces of function-body indent.
-                    let base_indent = code.lines()
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter().find(|b| b.backend == Backend::Python);
+            match block {
+                Some(b) => {
+                    let base_indent = b.code.lines()
                         .filter(|l| !l.trim().is_empty())
                         .map(|l| l.len() - l.trim_start().len())
                         .min().unwrap_or(0);
-                    for line in code.lines() {
+                    for line in b.code.lines() {
                         if line.trim().is_empty() { out.push('\n'); }
                         else {
                             let stripped = if line.len() >= base_indent { &line[base_indent..] } else { line.trim_start() };
@@ -157,18 +160,14 @@ fn emit_body_py(out: &mut String, body: &BulletBody, params: &[Param]) {
                         }
                     }
                 }
-                Backend::Rust | Backend::C | Backend::Cpp | Backend::Go => {
-                    let kw = backend.escape_keyword();
-                    out.push_str(&format!(
-                        "    raise NotImplementedError(\"'@{}' block cannot run in Python — use '@python' instead\")\n",
-                        kw
-                    ));
-                }
-                Backend::Unknown(kw) => {
-                    out.push_str(&format!(
-                        "    raise NotImplementedError(\"'@{}' is not a supported backend\")\n",
-                        kw
-                    ));
+                None => {
+                    // Try to find any block — fall back to error
+                    if let Some(b) = blocks.first() {
+                        out.push_str(&format!(
+                            "    raise NotImplementedError(\"'@{}' block cannot run in Python — use '@python' instead\")\n",
+                            b.backend.escape_keyword()
+                        ));
+                    }
                 }
             }
         }
@@ -199,6 +198,7 @@ fn emit_expr_py(expr: &Expr) -> String {
 fn emit_atom_py(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)         => s.clone(),
+        Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
         Atom::Interp(template) => format!("f\"{}\"", template),

@@ -5,7 +5,7 @@
 //! and a Makefile.
 
 use crate::ast::*;
-use crate::codegen_c;
+use crate::codegen::codegen_c;
 
 // ── Source file → C++ ────────────────────────────────────────────────────────
 
@@ -175,17 +175,26 @@ fn emit_body_cpp(out: &mut String, body: &BulletBody, params: &[Param]) {
                     out.push_str(&format!("    return {};\n", expr_str));
                 } else {
                     out.push_str(&format!("    auto {} = {};\n", pipe.binding, expr_str));
+                    if pipe.propagate {
+                        // C++ std::optional — if nullopt, return nullopt
+                        out.push_str(&format!(
+                            "    if (!{}) {{ return std::nullopt; }}\n",
+                            pipe.binding
+                        ));
+                    }
                 }
             }
         }
-        BulletBody::Native { backend, code } => {
-            match backend {
-                Backend::Cpp | Backend::C => {
-                    let base_indent = code.lines()
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter()
+                .find(|b| b.backend == Backend::Cpp || b.backend == Backend::C);
+            match block {
+                Some(b) => {
+                    let base_indent = b.code.lines()
                         .filter(|l| !l.trim().is_empty())
                         .map(|l| l.len() - l.trim_start_matches(' ').len())
                         .min().unwrap_or(0);
-                    for line in code.lines() {
+                    for line in b.code.lines() {
                         if line.trim().is_empty() { out.push('\n'); }
                         else {
                             let stripped = if line.len() >= base_indent { &line[base_indent..] } else { line.trim_start() };
@@ -193,11 +202,13 @@ fn emit_body_cpp(out: &mut String, body: &BulletBody, params: &[Param]) {
                         }
                     }
                 }
-                other => {
-                    out.push_str(&format!(
-                        "    // ERROR: '@{}' block cannot compile to C++\n",
-                        other.escape_keyword()
-                    ));
+                None => {
+                    if let Some(b) = blocks.first() {
+                        out.push_str(&format!(
+                            "    /* ERROR: '@{}' cannot be used in a C++ build — use '@cpp' */\n",
+                            b.backend.escape_keyword()
+                        ));
+                    }
                 }
             }
         }

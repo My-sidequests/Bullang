@@ -180,32 +180,43 @@ pub fn emit_body_c(out: &mut String, body: &BulletBody, params: &[Param], backen
             for (i, pipe) in pipes.iter().enumerate() {
                 let expr_str = emit_expr_c(&pipe.expr);
                 if i == last {
-                    // Declare with the function's return type
                     out.push_str(&format!("    return {};\n", expr_str));
                 } else {
-                    // We don't know the exact type, use __auto_type (GCC) or declare as the param type
                     out.push_str(&format!("    __auto_type {} = {};\n", pipe.binding, expr_str));
+                    if pipe.propagate {
+                        out.push_str(&format!(
+                            "    if (!{}) {{ return NULL; }}\n",
+                            pipe.binding
+                        ));
+                    }
                 }
             }
         }
-        BulletBody::Native { backend: block_backend, code } => {
-            if block_backend == backend || block_backend == &Backend::C || block_backend == &Backend::Cpp {
-                let base_indent = code.lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .map(|l| l.len() - l.trim_start_matches(' ').len())
-                    .min().unwrap_or(0);
-                for line in code.lines() {
-                    if line.trim().is_empty() { out.push('\n'); }
-                    else {
-                        let stripped = if line.len() >= base_indent { &line[base_indent..] } else { line.trim_start() };
-                        out.push_str(&format!("    {}\n", stripped));
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter()
+                .find(|b| b.backend == *backend || b.backend == Backend::C || b.backend == Backend::Cpp);
+            match block {
+                Some(b) => {
+                    let base_indent = b.code.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| l.len() - l.trim_start_matches(' ').len())
+                        .min().unwrap_or(0);
+                    for line in b.code.lines() {
+                        if line.trim().is_empty() { out.push('\n'); }
+                        else {
+                            let stripped = if line.len() >= base_indent { &line[base_indent..] } else { line.trim_start() };
+                            out.push_str(&format!("    {}\n", stripped));
+                        }
                     }
                 }
-            } else {
-                out.push_str(&format!(
-                    "    /* ERROR: '@{}' block cannot compile to C */\n",
-                    block_backend.escape_keyword()
-                ));
+                None => {
+                    if let Some(b) = blocks.first() {
+                        out.push_str(&format!(
+                            "    /* ERROR: '@{}' block cannot compile to C */\n",
+                            b.backend.escape_keyword()
+                        ));
+                    }
+                }
             }
         }
         BulletBody::Builtin(name) => {
@@ -235,6 +246,7 @@ pub fn emit_expr_c(expr: &Expr) -> String {
 pub fn emit_atom_c(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)         => s.clone(),
+        Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
         Atom::Interp(template) => {

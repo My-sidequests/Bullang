@@ -107,6 +107,8 @@ pub fn collect_tuple_types(source_files: &[(String, &SourceFile)]) -> Vec<Vec<cr
     }
     seen
 }
+
+pub fn emit_struct_go(s: &crate::ast::StructDef) -> String {
     let mut out = String::new();
     out.push_str(&format!("type {} struct {{\n", to_pascal_case(&s.name)));
     for field in &s.fields {
@@ -130,7 +132,7 @@ pub fn emit_main_go(file: &SourceFile, _package: &str) -> String {
     if !all_imports.contains(&"fmt".to_string()) {
         // Check if any native Go block is present
         let has_native = file.bullets.iter().any(|b| {
-            matches!(&b.body, BulletBody::Native { backend: Backend::Go, .. })
+            matches!(&b.body, BulletBody::Natives(blocks) if blocks.iter().any(|nb| nb.backend == Backend::Go))
         });
         if has_native { all_imports.push("fmt".to_string()); }
     }
@@ -182,14 +184,16 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
                     _ => {}
                 }
             }
-            BulletBody::Native { backend: Backend::Go, code } => {
-                if code.contains("sort.")    { push_unique(&mut imports, "sort"); }
-                if code.contains("strings.") { push_unique(&mut imports, "strings"); }
-                if code.contains("math.")    { push_unique(&mut imports, "math"); }
-                if code.contains("fmt.")     { push_unique(&mut imports, "fmt"); }
-                if code.contains("strconv.") { push_unique(&mut imports, "strconv"); }
-                if code.contains("os.")      { push_unique(&mut imports, "os"); }
-                if code.contains("bufio.")   { push_unique(&mut imports, "bufio"); }
+            BulletBody::Natives(blocks) => {
+                if let Some(b) = blocks.iter().find(|b| b.backend == Backend::Go) {
+                    if b.code.contains("sort.")    { push_unique(&mut imports, "sort"); }
+                    if b.code.contains("strings.") { push_unique(&mut imports, "strings"); }
+                    if b.code.contains("math.")    { push_unique(&mut imports, "math"); }
+                    if b.code.contains("fmt.")     { push_unique(&mut imports, "fmt"); }
+                    if b.code.contains("strconv.") { push_unique(&mut imports, "strconv"); }
+                    if b.code.contains("os.")      { push_unique(&mut imports, "os"); }
+                    if b.code.contains("bufio.")   { push_unique(&mut imports, "bufio"); }
+                }
             }
             BulletBody::Pipes(pipes) => {
                 // fmt.Sprintf needed whenever any pipe expression uses Interp
@@ -251,6 +255,13 @@ fn emit_body_go(out: &mut String, body: &BulletBody, params: &[Param], output: &
             for (i, pipe) in pipes.iter().enumerate() {
                 let expr = emit_expr_go(&pipe.expr);
                 out.push_str(&format!("\t{} := {}\n", pipe.binding, expr));
+                if pipe.propagate {
+                    // Go has no ? — emit an explicit nil/error check
+                    out.push_str(&format!(
+                        "\tif {} == nil {{ return nil }}\n",
+                        pipe.binding
+                    ));
+                }
                 if i == last {
                     let ret = bu_type_to_go(&output.ty);
                     if !ret.is_empty() {
@@ -259,29 +270,30 @@ fn emit_body_go(out: &mut String, body: &BulletBody, params: &[Param], output: &
                 }
             }
         }
-        BulletBody::Native { backend, code } => {
-            match backend {
-                Backend::Go => {
-                    // Strip common leading whitespace
-                    let base = code.lines()
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter().find(|b| b.backend == Backend::Go);
+            match block {
+                Some(b) => {
+                    let base = b.code.lines()
                         .filter(|l| !l.trim().is_empty())
                         .map(|l| l.len() - l.trim_start().len())
                         .min().unwrap_or(0);
-                    for line in code.lines() {
+                    for line in b.code.lines() {
                         if line.trim().is_empty() { out.push('\n'); }
                         else {
                             let stripped = if line.len() >= base { &line[base..] }
                                            else { line.trim_start() };
-                            // Convert tabs or spaces to single tab
                             out.push_str(&format!("\t{}\n", stripped));
                         }
                     }
                 }
-                other => {
-                    out.push_str(&format!(
-                        "\t// ERROR: '@{}' cannot be used in a Go build — use '@go'\n",
-                        other.escape_keyword()
-                    ));
+                None => {
+                    if let Some(b) = blocks.first() {
+                        out.push_str(&format!(
+                            "\t// ERROR: '@{}' cannot be used in a Go build — use '@go'\n",
+                            b.backend.escape_keyword()
+                        ));
+                    }
                 }
             }
         }
@@ -324,6 +336,7 @@ fn emit_expr_go(expr: &Expr) -> String {
 fn emit_atom_go(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)         => s.clone(),
+        Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
         Atom::Interp(template) => {

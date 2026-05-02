@@ -48,9 +48,6 @@ pub fn emit_main(file: &SourceFile, crate_name: &str) -> String {
     out
 }
 
-    out
-}
-
 /// Emits Cargo.toml with both a [[bin]] and [lib] section when main.rs exists.
 pub fn emit_cargo_toml_with_main(crate_name: &str) -> String {
     format!(
@@ -265,25 +262,34 @@ fn emit_body(out: &mut String, body: &BulletBody, params: &[Param], backend: &Ba
                 let expr_str = emit_expr(&pipe.expr);
                 if i == last {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
-                    let binding = &pipe.binding;
-                    out.push_str(&format!("    {}\n", binding));
+                    out.push_str(&format!("    {}\n", pipe.binding));
+                } else if pipe.propagate {
+                    out.push_str(&format!("    let {} = {}?;\n", pipe.binding, expr_str));
                 } else {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
                 }
             }
         }
-        BulletBody::Native { backend, code } => {
-            match backend {
-                Backend::Unknown(kw) => {
-                    out.push_str(&format!(
-                        "    compile_error!(\"\'@{}\' is not a supported backend\")\n",
-                        kw
-                    ));
-                }
-                _ => {
-                    for line in code.lines() {
-                        if line.trim().is_empty() { out.push('\n'); }
-                        else { out.push_str(&format!("    {}\n", line)); }
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter().find(|b| b.backend == Backend::Rust)
+                .or_else(|| blocks.first());
+            if let Some(b) = block {
+                match b.backend {
+                    Backend::Rust | Backend::Unknown(_) => {
+                        if matches!(b.backend, Backend::Unknown(_)) {
+                            out.push_str(&format!(
+                                "    compile_error!(\"\'@{}\' is not a supported backend\")\n",
+                                b.backend.escape_keyword()
+                            ));
+                        } else {
+                            for line in b.code.lines() {
+                                if line.trim().is_empty() { out.push('\n'); }
+                                else { out.push_str(&format!("    {}\n", line)); }
+                            }
+                        }
+                    }
+                    _ => {
+                        out.push_str("    compile_error!(\"no @rust block provided for this function\")\n");
                     }
                 }
             }
@@ -312,7 +318,8 @@ fn emit_expr(expr: &Expr) -> String {
 fn emit_atom(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)            => s.clone(),
-        Atom::Integer(n)          => n.to_string(),
+        Atom::Float(n) => n.to_string(),
+        Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)        => format!("\"{}\"", s),
         Atom::Interp(template)    => {
             // Rust 1.58+: format!("Hello {name}!") works directly with named captures.
