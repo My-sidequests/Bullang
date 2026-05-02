@@ -177,6 +177,7 @@ pub enum CallArg {
 pub enum Atom {
     Ident(String),
     Integer(i64),
+    Float(f64),
     /// A plain string literal with no interpolation: `"hello"`
     StringLit(String),
     /// A string template with `{var}` placeholders: `"hello {name}!"`
@@ -204,22 +205,29 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub struct Pipe {
-    pub inputs:  Vec<String>,
-    pub expr:    Expr,
-    pub binding: String,
-    pub span:    Span,
+    pub inputs:    Vec<String>,
+    pub expr:      Expr,
+    pub binding:   String,
+    pub propagate: bool,   // true when the bullet ends with `?`
+    pub span:      Span,
 }
 
 // ── Bullet body ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+pub struct NativeBlock {
+    pub backend: Backend,
+    pub code:    String,
+}
+
+#[derive(Debug, Clone)]
 pub enum BulletBody {
     /// Pure Bullang pipe chain.
     Pipes(Vec<Pipe>),
-    /// Verbatim code block for a specific backend (`@rust ... @end`).
-    Native { backend: Backend, code: String },
-    /// Reference to a stdlib builtin (`@builtin name`).
-    /// Resolved at codegen time from the backend's stdlib table.
+    /// One or more native escape blocks — each targets a specific backend.
+    /// At codegen time the matching block is selected; others are ignored.
+    Natives(Vec<NativeBlock>),
+    /// Reference to a stdlib builtin.
     Builtin(String),
 }
 

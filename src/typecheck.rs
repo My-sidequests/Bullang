@@ -123,7 +123,7 @@ fn check_function(
     is_skirmish: bool,
 ) -> Vec<TypeError> {
     let bullets = match &func.body {
-        BulletBody::Native { .. }  => return vec![],
+        BulletBody::Natives(_) => return vec![],
         BulletBody::Builtin(_)     => return vec![], // stdlib owns the type contract
         BulletBody::Pipes(p)       => p,
     };
@@ -135,13 +135,29 @@ fn check_function(
 
     let last = bullets.len().saturating_sub(1);
 
+    let output_is_propagatable = is_propagatable_type(&func.output.ty);
+
     for (i, bullet) in bullets.iter().enumerate() {
+        if bullet.propagate && !output_is_propagatable {
+            errors.push(terr(path, bullet.span, format!(
+                "Function '{}': `?` can only be used when the function returns \
+                 Option[T] or Result[T, E] (declared return type is {}).",
+                func.name, func.output.ty.to_rust()
+            )));
+        }
+        if bullet.propagate && i == last {
+            errors.push(terr(path, bullet.span, format!(
+                "Function '{}': `?` cannot appear on the last bullet. \
+                 Use it on intermediate bullets to propagate None/Err early.",
+                func.name
+            )));
+        }
+
         let expr_type = infer_expr(
             &bullet.expr, &local, env, is_skirmish,
             &func.name, path, bullet.span, &mut errors,
         );
 
-        // Last bullet: inferred type must match declared output type
         if i == last && !types_compatible(&expr_type, &func.output.ty) {
             errors.push(terr(path, bullet.span, format!(
                 "Function '{}': last bullet produces {} but declared output is {}.",
@@ -149,10 +165,39 @@ fn check_function(
             )));
         }
 
-        local.insert(bullet.binding.clone(), expr_type);
+        let binding_ty = if bullet.propagate {
+            unwrap_inner_type(&expr_type)
+        } else {
+            expr_type
+        };
+        local.insert(bullet.binding.clone(), binding_ty);
     }
 
     errors
+}
+
+// ── Propagation helpers ───────────────────────────────────────────────────────
+
+fn is_propagatable_type(ty: &BuType) -> bool {
+    if let BuType::Named(s) = ty {
+        s.starts_with("Option[") || s.starts_with("Result[")
+    } else {
+        false
+    }
+}
+
+fn unwrap_inner_type(ty: &BuType) -> BuType {
+    if let BuType::Named(s) = ty {
+        if s.starts_with("Option[") && s.ends_with(']') {
+            return BuType::Named(s[7..s.len()-1].trim().to_string());
+        }
+        if s.starts_with("Result[") && s.ends_with(']') {
+            let inner = &s[7..s.len()-1];
+            let t = inner.split(',').next().unwrap_or(inner).trim();
+            return BuType::Named(t.to_string());
+        }
+    }
+    BuType::Unknown
 }
 
 // ── Type inference ────────────────────────────────────────────────────────────
@@ -182,6 +227,13 @@ fn infer_expr(
             let string_ty = BuType::Named("String".to_string());
             if b.op == "+" && lhs_ty == string_ty && rhs_ty == string_ty {
                 return string_ty;
+            }
+
+            // Comparison operators return bool
+            let bool_ty = BuType::Named("bool".to_string());
+            let cmp_ops = ["==", "!=", "<", ">", "<=", ">="];
+            if cmp_ops.contains(&b.op.as_str()) {
+                return bool_ty;
             }
 
             if lhs_ty != rhs_ty {
@@ -221,6 +273,7 @@ fn infer_atom(
     errors:      &mut Vec<TypeError>,
 ) -> BuType {
     match atom {
+        Atom::Float(_)    => BuType::Named("f64".to_string()),
         Atom::Integer(_)   => BuType::Unknown,
         Atom::StringLit(_) => BuType::Named("String".to_string()),
         Atom::Interp(_)    => BuType::Named("String".to_string()),

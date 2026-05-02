@@ -2,9 +2,10 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
-// ── Identifiers & integers ────────────────────────────────────────────────────
-ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-integer = @{ "-"? ~ ASCII_DIGIT+ }
+// ── Identifiers & literals ────────────────────────────────────────────────────
+ident      = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+float      = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+integer    = @{ "-"? ~ ASCII_DIGIT+ }
 
 // ── Type system ───────────────────────────────────────────────────────────────
 // ty_unit = ()
@@ -37,21 +38,22 @@ string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 // ── Call arguments ────────────────────────────────────────────────────────────
 bullet_ref = { "&" ~ ident }
-call_arg   = { bullet_ref | integer | string_lit | ident }
+call_arg   = { bullet_ref | float | integer | string_lit | ident }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
-op         = { "+" | "-" | "*" | "/" | "%" }
+op         = { "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
 call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
-atom       = { call | integer | string_lit | ident }
+atom       = { call | float | integer | string_lit | ident }
 expr       = { atom ~ (op ~ atom)* }
 tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 pipe_val   = { tuple_expr | expr }
 
-// ── Input list  (a, b, …) ─────────────────────────────────────────────────────
-input_list = { "(" ~ ident ~ ("," ~ ident)* ~ ")" }
+// ── Input list  (a, b, …) or () ──────────────────────────────────────────────
+input_list = { "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" }
 
 // ── Pipe statement ────────────────────────────────────────────────────────────
-pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ ";" }
+propagate_op = { "?" }
+pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ propagate_op? ~ ";" }
 
 // ── Native backend escape block ──────────────────────────────────────────────
 // @<backend> ... @end  — verbatim code for a specific target backend.
@@ -68,7 +70,7 @@ native_block = @{ "@" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ (!"@end" ~ A
 builtin_call = { "builtin" ~ "::" ~ ident }
 
 // ── Bullet body: pure pipes, one native block, or a builtin reference ─────────
-bullet_body = { builtin_call | native_block | pipe+ }
+bullet_body = { builtin_call | native_block+ | pipe+ }
 
 // ── Function signature ────────────────────────────────────────────────────────
 param       = { ident ~ ":" ~ ty }

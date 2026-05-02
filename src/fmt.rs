@@ -126,15 +126,16 @@ fn format_body(body: &BulletBody) -> String {
         BulletBody::Pipes(pipes) => {
             pipes.iter().map(format_pipe).collect()
         }
-        BulletBody::Native { backend, code } => {
-            // Escape blocks are reproduced verbatim — never reformatted
-            let kw = backend.escape_keyword();
+        BulletBody::Natives(blocks) => {
             let mut out = String::new();
-            out.push_str(&format!("    @{}\n", kw));
-            for line in code.lines() {
-                out.push_str(&format!("    {}\n", line));
+            for b in blocks {
+                let kw = b.backend.escape_keyword();
+                out.push_str(&format!("    @{}\n", kw));
+                for line in b.code.lines() {
+                    out.push_str(&format!("    {}\n", line));
+                }
+                out.push_str("    @end\n");
             }
-            out.push_str("    @end\n");
             out
         }
         BulletBody::Builtin(name) => {
@@ -148,7 +149,8 @@ fn format_body(body: &BulletBody) -> String {
 fn format_pipe(pipe: &Pipe) -> String {
     let inputs = pipe.inputs.join(", ");
     let expr   = format_expr(&pipe.expr);
-    format!("    ({}) : {} -> {{{}}};\n", inputs, expr, pipe.binding)
+    let prop   = if pipe.propagate { "?" } else { "" };
+    format!("    ({}) : {} -> {{{}}}{};\n", inputs, expr, pipe.binding, prop)
 }
 
 // ── Expression formatting ─────────────────────────────────────────────────────
@@ -166,6 +168,7 @@ fn format_expr(expr: &Expr) -> String {
 fn format_atom(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)         => s.clone(),
+        Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
         Atom::Interp(template) => format!("\"{}\"", template),

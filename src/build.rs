@@ -257,7 +257,7 @@ fn emit_mod_file(dir: &Path, child_modules: &[String], backend: &Backend, writte
         Backend::Python => {
             write_file(
                 &dir.join("__init__.py"),
-                &codegen::emit_init_py(child_modules),
+                &codegen::emit_init_py(child_modules, &[]),
                 written,
             );
         }
@@ -364,30 +364,31 @@ fn check_file_backend(path: &Path, backend: &Backend, errors: &mut Vec<Validatio
 
     let path_str = path.display().to_string();
     for func in &sf.bullets {
-        if let crate::ast::BulletBody::Native { backend: block_backend, .. } = &func.body {
-            if block_backend != backend {
-                let expected_kw = backend.escape_keyword();
-                let actual_kw   = block_backend.escape_keyword();
-                if let Backend::Unknown(_) = block_backend {
-                    continue; // already caught by validator
-                }
-                // @c blocks are also valid in C++ projects
-                let compat = match (block_backend, backend) {
-                    (Backend::C, Backend::Cpp) => true,
+        if let crate::ast::BulletBody::Natives(blocks) = &func.body {
+            // With multi-block functions, compatibility means at least ONE block
+            // matches the target backend. If none match, report an error.
+            let has_match = blocks.iter().any(|b| {
+                match (&b.backend, backend) {
+                    (Backend::C, Backend::Cpp)   => true,
+                    (Backend::Cpp, Backend::Cpp) => true,
                     (a, b) => a == b,
-                };
-                if !compat {
-                    errors.push(ValidationError {
-                        file:    path_str.clone(),
-                        line:    func.span.line,
-                        col:     func.span.col,
-                        message: format!(
-                            "Function '{}': '@{}' block cannot be used when building \
-                             for '{}' backend. Use '@{}' instead.",
-                            func.name, actual_kw, backend.name(), expected_kw
-                        ),
-                    });
                 }
+            });
+            if !has_match && !blocks.is_empty() {
+                let available: Vec<String> = blocks.iter()
+                    .map(|b| b.backend.escape_keyword().to_string())
+                    .collect();
+                errors.push(ValidationError {
+                    file:    path_str.clone(),
+                    line:    func.span.line,
+                    col:     func.span.col,
+                    message: format!(
+                        "Function '{}': no '@{}' escape block provided. \
+                         Available blocks: @{}. Add a '@{}' block for this backend.",
+                        func.name, backend.escape_keyword(),
+                        available.join(", @"), backend.escape_keyword()
+                    ),
+                });
             }
         }
     }

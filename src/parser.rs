@@ -121,7 +121,8 @@ fn split_into_function_chunks(source: &str) -> Vec<(String, usize)> {
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("let ") || trimmed == "let" {
+        if trimmed.starts_with("let ") || trimmed == "let"
+            || trimmed == "#test" {
             chunk_starts.push(i);
         }
     }
@@ -335,40 +336,14 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
 
     match children[0].as_rule() {
         Rule::native_block => {
-            // The entire block is one atomic string: "@rust\n    code\n    @end"
-            // We split it manually to extract (backend_name, code).
-            let raw = children[0].as_str(); // e.g. "@rust\n    code\n    @end"
-
-            // Strip the leading "@"
-            let raw = &raw[1..];
-
-            // Extract backend name: everything up to the first whitespace char
-            let name_end = raw.find(|c: char| c.is_whitespace()).unwrap_or(raw.len());
-            let backend_str = &raw[..name_end];
-
-            // Extract code: everything after backend name up to (but not including) "@end"
-            // The content starts after the first newline following the backend name
-            let after_name = &raw[name_end..];
-            let code_end   = after_name.rfind("@end").unwrap_or(after_name.len());
-            let code_raw   = &after_name[..code_end];
-
-            // Normalise indentation: remove common leading whitespace from all content lines.
-            // This corrects for users who indent their @rust/@python blocks to match
-            // surrounding Bullang source (e.g. 4 spaces inside a bullet body).
-            let code = normalise_block_indent(code_raw);
-
-            let backend = match backend_str {
-                "rust"   => Backend::Rust,
-                "python" => Backend::Python,
-                "c"      => Backend::C,
-                "cpp"    => Backend::Cpp,
-                "go"     => Backend::Go,
-                other    => Backend::Unknown(other.to_string()),
-            };
-            BulletBody::Native { backend, code }
+            // Collect ALL native blocks — a function may have one per backend
+            let blocks: Vec<NativeBlock> = children.iter()
+                .filter(|c| c.as_rule() == Rule::native_block)
+                .map(|c| parse_native_block(c.as_str()))
+                .collect();
+            BulletBody::Natives(blocks)
         }
         Rule::builtin_call => {
-            // builtin::name — the ident after "::" is the builtin name
             let name = children[0].clone().into_inner()
                 .next().unwrap().as_str().to_string();
             BulletBody::Builtin(name)
@@ -380,6 +355,26 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
     }
 }
 
+fn parse_native_block(raw: &str) -> NativeBlock {
+    // raw is "@rust\n    code\n    @end"
+    let raw = &raw[1..]; // strip leading @
+    let name_end = raw.find(|c: char| c.is_whitespace()).unwrap_or(raw.len());
+    let backend_str = &raw[..name_end];
+    let after_name  = &raw[name_end..];
+    let code_end    = after_name.rfind("@end").unwrap_or(after_name.len());
+    let code_raw    = &after_name[..code_end];
+    let code        = normalise_block_indent(code_raw);
+    let backend = match backend_str {
+        "rust"   => Backend::Rust,
+        "python" => Backend::Python,
+        "c"      => Backend::C,
+        "cpp"    => Backend::Cpp,
+        "go"     => Backend::Go,
+        other    => Backend::Unknown(other.to_string()),
+    };
+    NativeBlock { backend, code }
+}
+
 // ── Pipe ──────────────────────────────────────────────────────────────────────
 
 fn parse_pipe(pair: Pair<Rule>) -> Pipe {
@@ -387,10 +382,14 @@ fn parse_pipe(pair: Pair<Rule>) -> Pipe {
     let mut inner = pair.into_inner();
     let inputs: Vec<String> = inner.next().unwrap().into_inner()
         .map(|p| p.as_str().to_string()).collect();
-    let expr    = parse_pipe_val(inner.next().unwrap());
-    let binding = inner.next().unwrap().into_inner()
+    let expr      = parse_pipe_val(inner.next().unwrap());
+    let binding   = inner.next().unwrap().into_inner()
         .next().unwrap().as_str().to_string();
-    Pipe { inputs, expr, binding, span: pipe_span }
+    // Optional propagate_op `?`
+    let propagate = inner.next()
+        .map(|p| p.as_rule() == Rule::propagate_op)
+        .unwrap_or(false);
+    Pipe { inputs, expr, binding, propagate, span: pipe_span }
 }
 
 fn parse_pipe_val(pair: Pair<Rule>) -> Expr {
@@ -424,6 +423,7 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
             let args   = ci.map(parse_call_arg).collect();
             Atom::Call { name, args }
         }
+        Rule::float      => Atom::Float(inner.as_str().parse().unwrap()),
         Rule::integer    => Atom::Integer(inner.as_str().parse().unwrap()),
         Rule::ident      => Atom::Ident(inner.as_str().to_string()),
         Rule::string_lit => parse_string_atom(inner.as_str()),
@@ -468,9 +468,10 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
         Rule::bullet_ref => CallArg::BulletRef(
             inner.into_inner().next().unwrap().as_str().to_string()
         ),
+        Rule::float      => CallArg::Value(inner.as_str().to_string()),
         Rule::integer    => CallArg::Value(inner.as_str().to_string()),
         Rule::ident      => CallArg::Value(inner.as_str().to_string()),
-        Rule::string_lit => CallArg::Value(inner.as_str().to_string()), // keep quoted
+        Rule::string_lit => CallArg::Value(inner.as_str().to_string()),
         other => unreachable!("unexpected call_arg: {:?}", other),
     }
 }
