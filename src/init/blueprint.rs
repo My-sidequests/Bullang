@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 use std::fs;
-use crate::ast::Rank;
 use super::{rank_for_depth, write_file};
 
 // ── README written into every blueprint project ───────────────────────────────

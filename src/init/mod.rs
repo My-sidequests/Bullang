@@ -13,7 +13,6 @@
 mod blueprint;
 
 pub use blueprint::{
-    BlueprintNode, BlueprintResult,
     parse_blueprint, init_from_blueprint, print_blueprint_tree,
 };
 
