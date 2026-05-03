@@ -175,8 +175,11 @@ fn run_c_tests(tests: &[TestFn], tmp: &Path) {
     src.push_str("    int passed = 0, failed = 0;\n\n");
     for t in tests {
         src.push_str(&format!(
-            "    if ({name}()) {{ printf(\"  ok  {name}\\n\"); passed++; }}\n\
-             \    else           {{ printf(\"  FAIL {name}\\n\"); failed++; }}\n",
+            "    if ({name}()) {{ printf(\"  ok  {name}\\n\"); passed++; }}\n",
+            name = t.name
+        ));
+        src.push_str(&format!(
+            "    else           {{ printf(\"  FAIL {name}\\n\"); failed++; }}\n",
             name = t.name
         ));
     }
@@ -203,8 +206,11 @@ fn run_cpp_tests(tests: &[TestFn], tmp: &Path) {
     src.push_str("    int passed = 0, failed = 0;\n\n");
     for t in tests {
         src.push_str(&format!(
-            "    if ({name}()) {{ std::cout << \"  ok  {name}\" << std::endl; passed++; }}\n\
-             \    else           {{ std::cout << \"  FAIL {name}\" << std::endl; failed++; }}\n",
+            "    if ({name}()) {{ std::cout << \"  ok  {name}\" << std::endl; passed++; }}\n",
+            name = t.name
+        ));
+        src.push_str(&format!(
+            "    else           {{ std::cout << \"  FAIL {name}\" << std::endl; failed++; }}\n",
             name = t.name
         ));
     }
@@ -263,8 +269,7 @@ fn run_go_tests(tests: &[TestFn], tmp: &Path) {
             s
         };
         src.push_str(&format!(
-            "func Test{go_name}(t *testing.T) {{\n\
-             \    if !{fn_name}() {{ t.Fail() }}\n}}\n\n",
+            "func Test{go_name}(t *testing.T) {{\n    if !{fn_name}() {{ t.Fail() }}\n}}\n\n",
             go_name = go_name, fn_name = t.name
         ));
     }

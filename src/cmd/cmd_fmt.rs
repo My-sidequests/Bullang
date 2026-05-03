@@ -10,7 +10,7 @@ use crate::ast::BuFile;
 use crate::fmt;
 use crate::parser;
 use crate::utils::{current_dir, find_root_from};
-use crate::validator::{collect_bu_files, collect_subdirs, read_inventory};
+use crate::validator::{collect_bu_files, collect_subdirs};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
