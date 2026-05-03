@@ -66,10 +66,6 @@ pub(crate) fn err(path: &Path, msg: impl Into<String>) -> ValidationError {
     ValidationError { file: path.display().to_string(), line: 0, col: 0, message: msg.into() }
 }
 
-fn serr(file: &str, span: Span, msg: impl Into<String>) -> ValidationError {
-    ValidationError { file: file.to_string(), line: span.line, col: span.col, message: msg.into() }
-}
-
 fn ferr(file: &str, msg: impl Into<String>) -> ValidationError {
     ValidationError { file: file.to_string(), line: 0, col: 0, message: msg.into() }
 }
