@@ -77,12 +77,12 @@ fn ferr(file: &str, msg: impl Into<String>) -> ValidationError {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub fn validate_tree(root: &Path) -> AllErrors {
-    validate_folder(root)
+    validate_folder(root, None)
 }
 
 // ── Folder validation (recursive, bottom-up) ─────────────────────────────────
 
-fn validate_folder(dir: &Path) -> AllErrors {
+fn validate_folder(dir: &Path, parent_lang: Option<&crate::ast::Backend>) -> AllErrors {
     let mut all = AllErrors::new();
 
     let inv = match helpers::read_inventory(dir) {
@@ -93,13 +93,36 @@ fn validate_folder(dir: &Path) -> AllErrors {
         }
     };
 
+    // ── Language inheritance check ────────────────────────────────────────────
+    let inv_path = dir.join("inventory.bu");
+    if let Some(parent) = parent_lang {
+        match &inv.lang {
+            Some(child) if child != parent => {
+                all.push_structural(ValidationError {
+                    file:    inv_path.display().to_string(),
+                    line:    0, col: 0,
+                    message: format!(
+                        "Language mismatch: parent folder declares '{}' but this folder \
+                         declares '{}'. Language is inherited from the highest ancestor — \
+                         remove #lang: from this inventory or align it with the parent.",
+                        parent.ext(), child.ext()
+                    ),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Effective lang for children: folder's own lang if set, otherwise inherit from parent
+    let effective_lang = inv.lang.as_ref().or(parent_lang);
+
     let subdirs   = helpers::collect_subdirs(dir);
     let bu_files  = helpers::collect_bu_files(dir);
     let main_path = helpers::main_bu_path(dir);
 
-    // Recurse into sub-folders first (bottom-up)
+    // Recurse into sub-folders (bottom-up), passing effective lang down
     for subdir in &subdirs {
-        all.extend_all(validate_folder(subdir));
+        all.extend_all(validate_folder(subdir, effective_lang));
     }
 
     match inv.rank {
@@ -161,7 +184,7 @@ fn validate_folder(dir: &Path) -> AllErrors {
             let inv_map = inventory::build_inv_map(&inv);
             for bu in &bu_files {
                 all.extend_all(source::validate_source_file(
-                    bu, &inv.rank, &inv_map, &HashSet::new(),
+                    bu, &inv.rank, &inv_map, &HashSet::new(), effective_lang,
                 ));
             }
         }
@@ -192,7 +215,7 @@ fn validate_folder(dir: &Path) -> AllErrors {
             let child_callable = helpers::collect_child_callable(&subdirs);
             let inv_map        = inventory::build_inv_map(&inv);
             for bu in &bu_files {
-                all.extend_all(source::validate_source_file(bu, rank, &inv_map, &child_callable));
+                all.extend_all(source::validate_source_file(bu, rank, &inv_map, &child_callable, effective_lang));
             }
             if let Some(ref mp) = main_path {
                 all.extend_all(validate_main_file(mp, &child_callable));

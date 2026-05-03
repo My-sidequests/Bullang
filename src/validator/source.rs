@@ -14,6 +14,7 @@ pub fn validate_source_file(
     folder_rank:    &Rank,
     _inv_map:       &std::collections::HashMap<String, Vec<String>>,
     child_callable: &HashSet<String>,
+    folder_lang:    Option<&crate::ast::Backend>,
 ) -> AllErrors {
     let mut all = AllErrors::new();
 
@@ -45,9 +46,60 @@ pub fn validate_source_file(
 
     for func in &sf.bullets {
         all.extend_structural(validate_function(func, &path_str, child_callable, is_skirmish));
+        // Native block language check
+        if let Some(lang) = folder_lang {
+            all.extend_structural(validate_native_blocks_lang(func, &path_str, lang));
+        } else {
+            // No lang declared — native blocks require one
+            if let crate::ast::BulletBody::Natives(blocks) = &func.body {
+                if !blocks.is_empty() {
+                    all.push_structural(ferr(&path_str, format!(
+                        "Function '{}': native block '@{}' requires #lang: to be \
+                         declared in this folder's inventory.",
+                        func.name, blocks[0].backend.escape_keyword()
+                    )));
+                }
+            }
+        }
     }
 
     all
+}
+
+// ── Native block language enforcement ────────────────────────────────────────
+
+/// Every native block in the function must match the folder's declared language.
+/// `@c` is accepted in a `#lang: cpp` folder.
+fn validate_native_blocks_lang(
+    func:    &Bullet,
+    path:    &str,
+    lang:    &crate::ast::Backend,
+) -> Vec<ValidationError> {
+    let blocks = match &func.body {
+        crate::ast::BulletBody::Natives(b) => b,
+        _                                   => return vec![],
+    };
+
+    let mut errors = Vec::new();
+    for block in blocks {
+        let ok = match (&block.backend, lang) {
+            // C blocks are valid in C++ folders
+            (crate::ast::Backend::C, crate::ast::Backend::Cpp) => true,
+            (a, b) => a == b,
+        };
+        if !ok {
+            errors.push(ferr(path, format!(
+                "Function '{}': '@{}' block is not allowed in a '#lang: {}' folder. \
+                 Use '@{}' instead, or move this function to a folder with '#lang: {}'.",
+                func.name,
+                block.backend.escape_keyword(),
+                lang.ext(),
+                lang.escape_keyword(),
+                block.backend.ext(),
+            )));
+        }
+    }
+    errors
 }
 
 // ── Function ──────────────────────────────────────────────────────────────────
