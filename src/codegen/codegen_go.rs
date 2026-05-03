@@ -81,7 +81,6 @@ pub fn tuple_go_name(inner: &[crate::ast::BuType]) -> String {
 
 /// Collect all unique Tuple type combinations used across all source files.
 pub fn collect_tuple_types(source_files: &[(String, &SourceFile)]) -> Vec<Vec<crate::ast::BuType>> {
-    use crate::ast::BuType;
     let mut seen: Vec<Vec<BuType>> = Vec::new();
 
     fn scan_type(ty: &BuType, seen: &mut Vec<Vec<BuType>>) {
@@ -206,7 +205,6 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
 }
 
 fn pipe_has_interp(expr: &crate::ast::Expr) -> bool {
-    use crate::ast::{Expr, Atom};
     match expr {
         Expr::Atom(Atom::Interp(_))     => true,
         Expr::Atom(_)                   => false,
