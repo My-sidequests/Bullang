@@ -196,12 +196,10 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
                 }
             }
             BulletBody::Pipes(pipes) => {
-                // fmt.Sprintf needed whenever any pipe expression uses Interp
                 if pipes.iter().any(|p| pipe_has_interp(&p.expr)) {
                     push_unique(&mut imports, "fmt");
                 }
             }
-            _ => {}
         }
     }
     imports.iter().map(|s| s.to_string()).collect()
