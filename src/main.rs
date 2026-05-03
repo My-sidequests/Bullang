@@ -84,8 +84,8 @@ enum Command {
         #[arg(short = 'n', long)]
         name: Option<String>,
         /// Target language extension: rs, py, c, cpp, go (default from #lang or rs)
-        #[arg(short = 'e', long, default_value = "rs")]
-        ext: String,
+        #[arg(short = 'e', long)]
+        ext: Option<String>,
         /// Explicit output path (project mode only)
         #[arg(long)]
         out: Option<PathBuf>,
@@ -100,7 +100,7 @@ enum Command {
     ///
     ///   bullang test                  (auto-detects backend from #lang)
     ///
-    ///   bullang test --ext py         (explicit backend)
+    ///   bullang test -e py            (explicit backend)
     Test {
         /// Path to the project to test (default: current directory)
         folder: Option<PathBuf>,
@@ -175,8 +175,8 @@ fn main() {
         Command::Install                                               => cmd::cmd_install(),
         Command::Init { name, depth, blueprint, lang, libs, path }    => cmd::cmd_init(name, depth, blueprint, lang, libs, path),
         Command::Convert { folder, name, ext, out, output }  => cmd::cmd_convert(folder, name, ext, out, output),
-        Command::Fmt { folder, dry_run }                                      => cmd::cmd_fmt(folder, dry_run),
-        Command::Test { folder, ext }                                          => cmd::cmd_test(folder, ext),
+        Command::Fmt { folder, dry_run }                       => cmd::cmd_fmt(folder, dry_run),
+        Command::Test { folder, ext }                          => cmd::cmd_test(folder, ext),
         Command::Check                                                 => cmd::cmd_check(),
         Command::Update { experimental }                               => cmd::cmd_update(experimental),
         Command::Stdlib { list }                                       => cmd::cmd_stdlib(list),
