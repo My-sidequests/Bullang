@@ -10,11 +10,11 @@ pub mod source;
 
 pub use helpers::{
     read_inventory, read_folder_rank, main_bu_path,
-    collect_bu_files, collect_subdirs, collect_child_callable,
+    collect_bu_files, collect_subdirs,
     validate_source_direct,
 };
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::collections::HashSet;
 use std::fs;
 use crate::ast::*;

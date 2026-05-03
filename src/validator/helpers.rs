@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use crate::ast::*;
 use crate::parser;
-use super::{ValidationError, AllErrors};
+use super::ValidationError;
 
 // ── Child callable collection ─────────────────────────────────────────────────
 
