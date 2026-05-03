@@ -140,7 +140,8 @@ bullang update --experimental pull and rebuild from the experimental branch
 
 #[derive(Debug)]
 pub enum BlueprintNode {
-    Folder { name: String, children: Vec<BlueprintNode> },
+    /// A sub-folder. `lang` is `Some("py")` etc. when written as `python: folder_name {`
+    Folder { name: String, lang: Option<String>, children: Vec<BlueprintNode> },
     Entry  { file: String, functions: Vec<String> },
 }
 
@@ -190,14 +191,19 @@ fn parse_block(
             ));
         }
 
-        if trimmed.ends_with(':') {
-            let name = trimmed.trim_end_matches(':').trim().to_string();
-            if name.is_empty() {
+        if trimmed.ends_with('{') || trimmed.ends_with(": {") || {
+            // Folder line: either "name {" or "lang: name {" or "name:"
+            trimmed.ends_with('{') || trimmed.ends_with(':')
+        } {
+            // Detect language prefix: "python: folder_name" or just "folder_name"
+            // A folder line ends with `{` (block open) or `:` (old indentation style)
+            let (lang, folder_name) = parse_folder_header(trimmed);
+            if folder_name.is_empty() {
                 return Err(format!("line {}: empty folder name", i + 1));
             }
             i += 1;
             let (children, next) = parse_block(lines, i, base_indent + unit, unit)?;
-            nodes.push(BlueprintNode::Folder { name, children });
+            nodes.push(BlueprintNode::Folder { name: folder_name, lang, children });
             i = next;
         } else {
             let entry = trimmed.trim_end_matches(';');
@@ -224,6 +230,48 @@ fn parse_block(
     }
 
     Ok((nodes, i))
+}
+
+/// Parse a folder header line into (Option<lang_ext>, folder_name).
+///
+/// Accepts these forms:
+///   `python: my_folder`   → (Some("py"), "my_folder")
+///   `rs: my_folder`       → (Some("rs"), "my_folder")
+///   `my_folder`           → (None, "my_folder")
+///
+/// The folder name part has any trailing `:` or `{` stripped.
+fn parse_folder_header(trimmed: &str) -> (Option<String>, String) {
+    // Strip trailing `:` or `{`
+    let stripped = trimmed.trim_end_matches('{').trim().trim_end_matches(':').trim();
+
+    // Known language names (long form and short form)
+    const LANGS: &[(&str, &str)] = &[
+        ("rust",   "rs"),
+        ("rs",     "rs"),
+        ("python", "py"),
+        ("py",     "py"),
+        ("c",      "c"),
+        ("cpp",    "cpp"),
+        ("c++",    "cpp"),
+        ("go",     "go"),
+        ("golang", "go"),
+    ];
+
+    // Check if it matches "lang: folder_name"
+    if let Some(colon) = stripped.find(':') {
+        let prefix = stripped[..colon].trim().to_lowercase();
+        let rest   = stripped[colon+1..].trim().to_string();
+        if !rest.is_empty() {
+            for (long, short) in LANGS {
+                if prefix == *long {
+                    return (Some(short.to_string()), rest);
+                }
+            }
+        }
+    }
+
+    // No language prefix
+    (None, stripped.to_string())
 }
 
 // ── Blueprint → folder tree ───────────────────────────────────────────────────
@@ -276,8 +324,10 @@ pub fn init_from_blueprint(
         .filter(|n| matches!(n, BlueprintNode::Folder { .. }))
         .collect();
     for node in child_folders {
-        if let BlueprintNode::Folder { name: folder_name, children } = node {
-            emit_blueprint_folder(&root, folder_name, children, max_depth - 1, &mut files_created)?;
+        if let BlueprintNode::Folder { name: folder_name, lang: folder_lang, children } = node {
+            // Folder lang overrides the blueprint-level lang; if neither set, None
+            let effective_lang = folder_lang.as_deref().or(lang);
+            emit_blueprint_folder(&root, folder_name, children, max_depth - 1, effective_lang, &mut files_created)?;
         }
     }
 
@@ -293,6 +343,7 @@ fn emit_blueprint_folder(
     name:            &str,
     children:        &[BlueprintNode],
     depth_remaining: usize,
+    inherited_lang:  Option<&str>,
     created:         &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let dir = parent.join(name);
@@ -303,6 +354,9 @@ fn emit_blueprint_folder(
         .ok_or_else(|| format!("Blueprint nesting too deep at '{}'", name))?;
 
     let mut inv = format!("#rank: {};\n", rank.name());
+    if let Some(l) = inherited_lang {
+        inv.push_str(&format!("#lang: {};\n", l));
+    }
 
     let entries: Vec<&BlueprintNode> = children.iter()
         .filter(|n| matches!(n, BlueprintNode::Entry { .. }))
@@ -318,8 +372,10 @@ fn emit_blueprint_folder(
     write_file(&dir.join("inventory.bu"), &inv, created)?;
 
     for child in children {
-        if let BlueprintNode::Folder { name: child_name, children: grandchildren } = child {
-            emit_blueprint_folder(&dir, child_name, grandchildren, depth_remaining - 1, created)?;
+        if let BlueprintNode::Folder { name: child_name, lang: child_lang, children: grandchildren } = child {
+            // Child's explicit lang overrides the inherited one; propagates further down
+            let effective = child_lang.as_deref().or(inherited_lang);
+            emit_blueprint_folder(&dir, child_name, grandchildren, depth_remaining - 1, effective, created)?;
         }
     }
 
