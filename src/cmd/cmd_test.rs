@@ -73,7 +73,6 @@ pub fn cmd_test(folder: Option<PathBuf>, ext: String) {
 
 pub struct TestFn {
     pub name:   String,
-    pub file:   String,
     pub module: String,
 }
 
@@ -110,7 +109,6 @@ fn collect_tests_in(dir: &Path, out: &mut Vec<TestFn>) {
         for func in sf.bullets.iter().filter(|b| b.is_test) {
             out.push(TestFn {
                 name:   func.name.clone(),
-                file:   bu_path.display().to_string(),
                 module: module.clone(),
             });
         }
