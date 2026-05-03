@@ -196,16 +196,3 @@ pub fn format_type(ty: &BuType) -> String {
     }
 }
 
-// ── Format check ─────────────────────────────────────────────────────────────
-
-/// Returns `true` if `source` is already in canonical format.
-/// Used by `bullang check` to report drift without writing.
-pub fn is_formatted_source(source: &str, sf: &SourceFile) -> bool {
-    format_source(sf) == source.trim_end_matches('\n').to_string() + "\n"
-        || format_source(sf) == source
-}
-
-pub fn is_formatted_inventory(source: &str, inv: &InventoryFile) -> bool {
-    format_inventory(inv) == source.trim_end_matches('\n').to_string() + "\n"
-        || format_inventory(inv) == source
-}
