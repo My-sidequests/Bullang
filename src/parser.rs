@@ -121,8 +121,7 @@ fn split_into_function_chunks(source: &str) -> Vec<(String, usize)> {
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("let ") || trimmed == "let"
-            || trimmed == "#test" {
+        if trimmed.starts_with("let ") || trimmed == "let" {
             chunk_starts.push(i);
         }
     }
@@ -296,17 +295,11 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
 fn parse_bullet(pair: Pair<Rule>) -> Bullet {
     let bullet_span = span_of(&pair);
     let mut inner   = pair.into_inner();
-
-    // Optional #test annotation
-    let first    = inner.next().unwrap();
-    let is_test  = first.as_rule() == Rule::test_ann;
-    let name_pair = if is_test { inner.next().unwrap() } else { first };
-
-    let name   = name_pair.as_str().to_string();
-    let params = parse_param_list(inner.next().unwrap());
-    let output = parse_output_decl(inner.next().unwrap());
-    let body   = parse_bullet_body(inner.next().unwrap());
-    Bullet { name, params, output, body, span: bullet_span, is_test }
+    let name        = inner.next().unwrap().as_str().to_string();
+    let params      = parse_param_list(inner.next().unwrap());
+    let output      = parse_output_decl(inner.next().unwrap());
+    let body        = parse_bullet_body(inner.next().unwrap());
+    Bullet { name, params, output, body, span: bullet_span }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {

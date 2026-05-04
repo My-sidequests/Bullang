@@ -94,23 +94,20 @@ enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Run #test-annotated functions in the project.
+    /// Strip test folders from a converted output tree for production.
     ///
-    /// Examples:
+    /// Deletes every folder whose name starts with `test_`, recursively.
+    /// Restarts from the root after each deletion so no test folder is missed.
     ///
-    ///   bullang test                  (auto-detects backend from #lang)
+    /// Example:
     ///
-    ///   bullang test -e py            (explicit backend)
-    Test {
-        /// Path to the project to test (default: current directory)
-        folder: Option<PathBuf>,
-        /// Target language extension (default: from #lang in inventory, or rs)
-        #[arg(short = 'e', long, default_value = "rs")]
-        ext: String,
+    ///   bullang prod my_c_project
+    Prod {
+        /// Path to the output folder to clean
+        folder: PathBuf,
     },
 
-    /// Format all .bu files in the project to canonical style.
-    ///
+    /// Format all .bu files in the project to canonical style.    ///
     /// Rewrites files in place. Escape block contents are never modified.
     /// To check formatting without writing, use `bullang check`.
     ///
@@ -176,7 +173,7 @@ fn main() {
         Command::Init { name, depth, blueprint, lang, libs, path }    => cmd::cmd_init(name, depth, blueprint, lang, libs, path),
         Command::Convert { folder, name, ext, out, output }  => cmd::cmd_convert(folder, name, ext, out, output),
         Command::Fmt { folder, dry_run }                       => cmd::cmd_fmt(folder, dry_run),
-        Command::Test { folder, ext }                          => cmd::cmd_test(folder, ext),
+        Command::Prod { folder }                                        => cmd::cmd_prod(folder),
         Command::Check                                                 => cmd::cmd_check(),
         Command::Update { experimental }                               => cmd::cmd_update(experimental),
         Command::Stdlib { list }                                       => cmd::cmd_stdlib(list),

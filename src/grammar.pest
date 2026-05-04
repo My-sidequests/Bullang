@@ -78,10 +78,8 @@ param_list  = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 output_decl = { "->" ~ ident ~ ":" ~ ty }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
-// ── Test annotation ───────────────────────────────────────────────────────────
-test_ann = { "#test" }
-
-bullet = { test_ann? ~ "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
+// ── Bullet (function declaration) ────────────────────────────────────────────
+bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 
 // ── Struct definitions (declared in inventory.bu, not in source files) ────────
 struct_field  = { ident ~ ":" ~ ty }

@@ -267,13 +267,11 @@ pub struct StructDef {
 /// A single function. All bullets are always public — there is no private code.
 #[derive(Debug, Clone)]
 pub struct Bullet {
-    pub name:    String,
-    pub params:  Vec<Param>,
-    pub output:  OutputDecl,
-    pub body:    BulletBody,
-    pub span:    Span,
-    /// True when the function is annotated with `#test` — only compiled by `bullang test`.
-    pub is_test: bool,
+    pub name:   String,
+    pub params: Vec<Param>,
+    pub output: OutputDecl,
+    pub body:   BulletBody,
+    pub span:   Span,
 }
 
 // ── Inventory entry ───────────────────────────────────────────────────────────

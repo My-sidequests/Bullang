@@ -97,10 +97,6 @@ fn format_inv_entry(entry: &InventoryEntry) -> String {
 fn format_bullet(func: &Bullet) -> String {
     let mut out = String::new();
 
-    if func.is_test {
-        out.push_str("#test\n");
-    }
-
     let params = func.params.iter()
         .map(|p| format!("{}: {}", p.name, format_type(&p.ty)))
         .collect::<Vec<_>>()
