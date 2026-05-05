@@ -5,7 +5,7 @@
 //! and a Makefile.
 
 use crate::ast::*;
-use crate::codegen_c;
+use crate::codegen::codegen_c;
 
 // ── Source file → C++ ────────────────────────────────────────────────────────
 
@@ -15,7 +15,6 @@ pub fn emit_source_cpp(file: &SourceFile, header_name: &str) -> String {
     out.push_str("#include <cstdlib>\n");
     out.push_str("#include <cstring>\n\n");
 
-    // Extract namespace name from header name (e.g. "myproject.hpp" -> "myproject")
     let ns = header_name.trim_end_matches(".hpp");
     out.push_str(&format!("namespace {} {{\n\n", ns));
     for func in &file.bullets {
@@ -26,6 +25,18 @@ pub fn emit_source_cpp(file: &SourceFile, header_name: &str) -> String {
     out
 }
 
+// ── Struct emitter ────────────────────────────────────────────────────────────
+
+pub fn emit_struct_cpp(s: &crate::ast::StructDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("struct {} {{\n", s.name));
+    for field in &s.fields {
+        out.push_str(&format!("    {} {};\n", bu_type_to_cpp(&field.ty), field.name));
+    }
+    out.push_str("};\n");
+    out
+}
+
 // ── Header file ───────────────────────────────────────────────────────────────
 
 pub fn emit_header_cpp(
@@ -33,6 +44,7 @@ pub fn emit_header_cpp(
     source_files: &[(String, &SourceFile)],
     namespace:    &str,
     includes:     &[String],
+    structs:      &[crate::ast::StructDef],
 ) -> String {
     let guard = format!("{}_HPP", module_name.to_uppercase().replace('-', "_"));
     let mut out = String::new();
@@ -42,6 +54,7 @@ pub fn emit_header_cpp(
     out.push_str("#include <cstddef>\n");
     out.push_str("#include <string>\n");
     out.push_str("#include <vector>\n");
+    out.push_str("#include <unordered_map>\n");
     out.push_str("#include <optional>\n");
     out.push_str("#include <functional>\n");
     out.push_str("#include <algorithm>\n");
@@ -54,6 +67,12 @@ pub fn emit_header_cpp(
     out.push('\n');
 
     out.push_str(&format!("namespace {} {{\n\n", namespace));
+
+    // Inventory struct definitions first — visible to all function signatures
+    for s in structs {
+        out.push_str(&emit_struct_cpp(s));
+        out.push('\n');
+    }
 
     for (filename, sf) in source_files {
         out.push_str(&format!("// {}\n", filename));
@@ -100,10 +119,10 @@ pub fn emit_makefile_cpp(
     let obj_str = objects.join(" ");
 
     let mut out = String::new();
-    out.push_str("CXX      = cc\n");
+    out.push_str("CXX      = c++\n");
     out.push_str("CXXFLAGS = -Wall -Werror -Wextra -g -std=c++17\n");
-    out.push_str(&format!("TARGET  = {}\n\n", crate_name));
-    out.push_str(&format!("OBJECTS = {}\n\n", obj_str));
+    out.push_str(&format!("TARGET   = {}\n\n", crate_name));
+    out.push_str(&format!("OBJECTS  = {}\n\n", obj_str));
 
     if has_main {
         out.push_str("all: $(TARGET)\n\n");
@@ -156,17 +175,26 @@ fn emit_body_cpp(out: &mut String, body: &BulletBody, params: &[Param]) {
                     out.push_str(&format!("    return {};\n", expr_str));
                 } else {
                     out.push_str(&format!("    auto {} = {};\n", pipe.binding, expr_str));
+                    if pipe.propagate {
+                        // C++ std::optional — if nullopt, return nullopt
+                        out.push_str(&format!(
+                            "    if (!{}) {{ return std::nullopt; }}\n",
+                            pipe.binding
+                        ));
+                    }
                 }
             }
         }
-        BulletBody::Native { backend, code } => {
-            match backend {
-                Backend::Cpp | Backend::C => {
-                    let base_indent = code.lines()
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter()
+                .find(|b| b.backend == Backend::Cpp || b.backend == Backend::C);
+            match block {
+                Some(b) => {
+                    let base_indent = b.code.lines()
                         .filter(|l| !l.trim().is_empty())
                         .map(|l| l.len() - l.trim_start_matches(' ').len())
                         .min().unwrap_or(0);
-                    for line in code.lines() {
+                    for line in b.code.lines() {
                         if line.trim().is_empty() { out.push('\n'); }
                         else {
                             let stripped = if line.len() >= base_indent { &line[base_indent..] } else { line.trim_start() };
@@ -174,11 +202,13 @@ fn emit_body_cpp(out: &mut String, body: &BulletBody, params: &[Param]) {
                         }
                     }
                 }
-                other => {
-                    out.push_str(&format!(
-                        "    // ERROR: '@{}' block cannot compile to C++\n",
-                        other.escape_keyword()
-                    ));
+                None => {
+                    if let Some(b) = blocks.first() {
+                        out.push_str(&format!(
+                            "    /* ERROR: '@{}' cannot be used in a C++ build — use '@cpp' */\n",
+                            b.backend.escape_keyword()
+                        ));
+                    }
                 }
             }
         }
@@ -236,6 +266,15 @@ fn translate_cpp_generic(s: &str) -> String {
     if s.starts_with("Vec[") && s.ends_with(']') {
         let inner = &s[4..s.len()-1];
         return format!("std::vector<{}>", rust_type_to_cpp(inner));
+    }
+    if s.starts_with("HashMap[") && s.ends_with(']') {
+        let inner = &s[8..s.len()-1];
+        let parts: Vec<&str> = inner.splitn(2, ',').collect();
+        if parts.len() == 2 {
+            return format!("std::unordered_map<{}, {}>",
+                rust_type_to_cpp(parts[0].trim()),
+                rust_type_to_cpp(parts[1].trim()));
+        }
     }
     if s.starts_with("Option[") && s.ends_with(']') {
         let inner = &s[7..s.len()-1];

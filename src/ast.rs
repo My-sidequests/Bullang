@@ -177,6 +177,13 @@ pub enum CallArg {
 pub enum Atom {
     Ident(String),
     Integer(i64),
+    Float(f64),
+    /// A plain string literal with no interpolation: `"hello"`
+    StringLit(String),
+    /// A string template with `{var}` placeholders: `"hello {name}!"`
+    /// Stored as the raw template content (quotes stripped).
+    /// Each codegen resolves the placeholders into its own format mechanism.
+    Interp(String),
     Call { name: String, args: Vec<CallArg> },
 }
 
@@ -198,22 +205,29 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub struct Pipe {
-    pub inputs:  Vec<String>,
-    pub expr:    Expr,
-    pub binding: String,
-    pub span:    Span,
+    pub inputs:    Vec<String>,
+    pub expr:      Expr,
+    pub binding:   String,
+    pub propagate: bool,   // true when the bullet ends with `?`
+    pub span:      Span,
 }
 
 // ── Bullet body ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+pub struct NativeBlock {
+    pub backend: Backend,
+    pub code:    String,
+}
+
+#[derive(Debug, Clone)]
 pub enum BulletBody {
     /// Pure Bullang pipe chain.
     Pipes(Vec<Pipe>),
-    /// Verbatim code block for a specific backend (`@rust ... @end`).
-    Native { backend: Backend, code: String },
-    /// Reference to a stdlib builtin (`@builtin name`).
-    /// Resolved at codegen time from the backend's stdlib table.
+    /// One or more native escape blocks — each targets a specific backend.
+    /// At codegen time the matching block is selected; others are ignored.
+    Natives(Vec<NativeBlock>),
+    /// Reference to a stdlib builtin.
     Builtin(String),
 }
 
@@ -231,6 +245,21 @@ pub struct OutputDecl {
 pub struct Param {
     pub name: String,
     pub ty:   BuType,
+}
+
+// ── Struct definitions ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub ty:   BuType,
+}
+
+/// A struct type definition. Structs are always public.
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name:   String,
+    pub fields: Vec<StructField>,
 }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
@@ -256,18 +285,19 @@ pub struct InventoryEntry {
 
 // ── File types ────────────────────────────────────────────────────────────────
 
-/// A source .bu file — just bullet declarations, no metadata.
+/// A source .bu file — only bullet declarations. Structs live in inventory.bu.
 #[derive(Debug, Clone)]
 pub struct SourceFile {
     pub bullets: Vec<Bullet>,
 }
 
-/// An inventory.bu file — rank + complete manifest of the folder.
+/// An inventory.bu file — rank, directives, struct definitions, and file manifest.
 #[derive(Debug, Clone)]
 pub struct InventoryFile {
     pub rank:    Rank,
-    pub lang:    Option<Backend>,      // #lang: ext; — intended build target
-    pub libs:    Vec<String>,          // #lib: header; declarations (C/C++ only)
+    pub lang:    Option<Backend>,      // #lang: ext;
+    pub libs:    Vec<String>,          // #lib: header; (C/C++ only)
+    pub structs: Vec<StructDef>,       // struct definitions for this folder
     pub entries: Vec<InventoryEntry>,  // one per source file in this folder
 }
 

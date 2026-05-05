@@ -86,7 +86,6 @@ pub fn parse_file_tolerant(source: &str, file_path: &str) -> ParseResult {
                 bullets.extend(sf.bullets);
             }
             Err(e) => {
-                // Adjust line numbers by the chunk's offset in the original file
                 let (line, col) = pest_error_location(&e);
                 let adjusted_line = line + line_offset.saturating_sub(1);
                 errors.push(ParseError {
@@ -226,12 +225,33 @@ fn parse_source(pair: Pair<Rule>) -> SourceFile {
     SourceFile { bullets }
 }
 
+// ── Struct definition ─────────────────────────────────────────────────────────
+
+fn parse_struct_def(pair: Pair<Rule>) -> crate::ast::StructDef {
+    let mut inner = pair.into_inner();
+    let name      = inner.next().unwrap().as_str().to_string();
+    // struct_fields contains struct_field* children
+    let fields_pair = inner.next().unwrap();
+    let fields = fields_pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::struct_field)
+        .map(|p| {
+            let mut fi = p.into_inner();
+            crate::ast::StructField {
+                name: fi.next().unwrap().as_str().to_string(),
+                ty:   parse_ty(fi.next().unwrap()),
+            }
+        })
+        .collect();
+    crate::ast::StructDef { name, fields }
+}
+
 // ── Inventory file ────────────────────────────────────────────────────────────
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     let mut rank    = None;
     let mut lang    = None;
     let mut libs    = Vec::new();
+    let mut structs = Vec::new();
     let mut entries = Vec::new();
 
     for inner in pair.into_inner() {
@@ -247,6 +267,9 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
                 let name = inner.into_inner().next().unwrap().as_str().trim().to_string();
                 libs.push(name);
             }
+            Rule::struct_def => {
+                structs.push(parse_struct_def(inner));
+            }
             Rule::inv_entry => {
                 let mut ci    = inner.into_inner();
                 let file      = ci.next().unwrap().as_str().to_string();
@@ -259,9 +282,10 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     }
 
     InventoryFile {
-        rank:    rank.expect("inventory.bu is missing #rank"),
+        rank: rank.expect("inventory.bu is missing #rank"),
         lang,
         libs,
+        structs,
         entries,
     }
 }
@@ -305,40 +329,14 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
 
     match children[0].as_rule() {
         Rule::native_block => {
-            // The entire block is one atomic string: "@rust\n    code\n    @end"
-            // We split it manually to extract (backend_name, code).
-            let raw = children[0].as_str(); // e.g. "@rust\n    code\n    @end"
-
-            // Strip the leading "@"
-            let raw = &raw[1..];
-
-            // Extract backend name: everything up to the first whitespace char
-            let name_end = raw.find(|c: char| c.is_whitespace()).unwrap_or(raw.len());
-            let backend_str = &raw[..name_end];
-
-            // Extract code: everything after backend name up to (but not including) "@end"
-            // The content starts after the first newline following the backend name
-            let after_name = &raw[name_end..];
-            let code_end   = after_name.rfind("@end").unwrap_or(after_name.len());
-            let code_raw   = &after_name[..code_end];
-
-            // Normalise indentation: remove common leading whitespace from all content lines.
-            // This corrects for users who indent their @rust/@python blocks to match
-            // surrounding Bullang source (e.g. 4 spaces inside a bullet body).
-            let code = normalise_block_indent(code_raw);
-
-            let backend = match backend_str {
-                "rust"   => Backend::Rust,
-                "python" => Backend::Python,
-                "c"      => Backend::C,
-                "cpp"    => Backend::Cpp,
-                "go"     => Backend::Go,
-                other    => Backend::Unknown(other.to_string()),
-            };
-            BulletBody::Native { backend, code }
+            // Collect ALL native blocks — a function may have one per backend
+            let blocks: Vec<NativeBlock> = children.iter()
+                .filter(|c| c.as_rule() == Rule::native_block)
+                .map(|c| parse_native_block(c.as_str()))
+                .collect();
+            BulletBody::Natives(blocks)
         }
         Rule::builtin_call => {
-            // builtin::name — the ident after "::" is the builtin name
             let name = children[0].clone().into_inner()
                 .next().unwrap().as_str().to_string();
             BulletBody::Builtin(name)
@@ -350,6 +348,26 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
     }
 }
 
+fn parse_native_block(raw: &str) -> NativeBlock {
+    // raw is "@rust\n    code\n    @end"
+    let raw = &raw[1..]; // strip leading @
+    let name_end = raw.find(|c: char| c.is_whitespace()).unwrap_or(raw.len());
+    let backend_str = &raw[..name_end];
+    let after_name  = &raw[name_end..];
+    let code_end    = after_name.rfind("@end").unwrap_or(after_name.len());
+    let code_raw    = &after_name[..code_end];
+    let code        = normalise_block_indent(code_raw);
+    let backend = match backend_str {
+        "rust"   => Backend::Rust,
+        "python" => Backend::Python,
+        "c"      => Backend::C,
+        "cpp"    => Backend::Cpp,
+        "go"     => Backend::Go,
+        other    => Backend::Unknown(other.to_string()),
+    };
+    NativeBlock { backend, code }
+}
+
 // ── Pipe ──────────────────────────────────────────────────────────────────────
 
 fn parse_pipe(pair: Pair<Rule>) -> Pipe {
@@ -357,10 +375,14 @@ fn parse_pipe(pair: Pair<Rule>) -> Pipe {
     let mut inner = pair.into_inner();
     let inputs: Vec<String> = inner.next().unwrap().into_inner()
         .map(|p| p.as_str().to_string()).collect();
-    let expr    = parse_pipe_val(inner.next().unwrap());
-    let binding = inner.next().unwrap().into_inner()
+    let expr      = parse_pipe_val(inner.next().unwrap());
+    let binding   = inner.next().unwrap().into_inner()
         .next().unwrap().as_str().to_string();
-    Pipe { inputs, expr, binding, span: pipe_span }
+    // Optional propagate_op `?`
+    let propagate = inner.next()
+        .map(|p| p.as_rule() == Rule::propagate_op)
+        .unwrap_or(false);
+    Pipe { inputs, expr, binding, propagate, span: pipe_span }
 }
 
 fn parse_pipe_val(pair: Pair<Rule>) -> Expr {
@@ -394,10 +416,43 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
             let args   = ci.map(parse_call_arg).collect();
             Atom::Call { name, args }
         }
-        Rule::integer => Atom::Integer(inner.as_str().parse().unwrap()),
-        Rule::ident   => Atom::Ident(inner.as_str().to_string()),
+        Rule::float      => Atom::Float(inner.as_str().parse().unwrap()),
+        Rule::integer    => Atom::Integer(inner.as_str().parse().unwrap()),
+        Rule::ident      => Atom::Ident(inner.as_str().to_string()),
+        Rule::string_lit => parse_string_atom(inner.as_str()),
         other => unreachable!("unexpected atom: {:?}", other),
     }
+}
+
+/// Strip the outer quotes from a string literal and decide whether it contains
+/// `{ident}` interpolation placeholders.
+fn parse_string_atom(raw: &str) -> Atom {
+    // raw includes the surrounding quotes: "hello {name}"
+    let content = &raw[1..raw.len()-1];
+    if has_interp_vars(content) {
+        Atom::Interp(content.to_string())
+    } else {
+        Atom::StringLit(content.to_string())
+    }
+}
+
+/// True if the string contains at least one `{ident}` placeholder.
+fn has_interp_vars(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let ident_chars: String = chars.by_ref()
+                .take_while(|&x| x != '}')
+                .collect();
+            if !ident_chars.is_empty()
+                && ident_chars.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false)
+                && ident_chars.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
@@ -406,8 +461,10 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
         Rule::bullet_ref => CallArg::BulletRef(
             inner.into_inner().next().unwrap().as_str().to_string()
         ),
-        Rule::integer => CallArg::Value(inner.as_str().to_string()),
-        Rule::ident   => CallArg::Value(inner.as_str().to_string()),
+        Rule::float      => CallArg::Value(inner.as_str().to_string()),
+        Rule::integer    => CallArg::Value(inner.as_str().to_string()),
+        Rule::ident      => CallArg::Value(inner.as_str().to_string()),
+        Rule::string_lit => CallArg::Value(inner.as_str().to_string()),
         other => unreachable!("unexpected call_arg: {:?}", other),
     }
 }

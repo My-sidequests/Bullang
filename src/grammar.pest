@@ -2,9 +2,10 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
 
-// ── Identifiers & integers ────────────────────────────────────────────────────
-ident   = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-integer = @{ "-"? ~ ASCII_DIGIT+ }
+// ── Identifiers & literals ────────────────────────────────────────────────────
+ident      = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+float      = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+integer    = @{ "-"? ~ ASCII_DIGIT+ }
 
 // ── Type system ───────────────────────────────────────────────────────────────
 // ty_unit = ()
@@ -30,23 +31,29 @@ ty              = { ty_unit | ty_tuple | ty_array | ty_fn | ty_ref_mut | ty_ref 
 // ── Binding  {name} ───────────────────────────────────────────────────────────
 binding = { "{" ~ ident ~ "}" }
 
+// ── String literals ───────────────────────────────────────────────────────────
+// Stored verbatim (quotes included) by the @-atomic rule so escape sequences
+// and interpolation placeholders are preserved exactly as written.
+string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
 // ── Call arguments ────────────────────────────────────────────────────────────
 bullet_ref = { "&" ~ ident }
-call_arg   = { bullet_ref | integer | ident }
+call_arg   = { bullet_ref | float | integer | string_lit | ident }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
-op         = { "+" | "-" | "*" | "/" | "%" }
+op         = { "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
 call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
-atom       = { call | integer | ident }
+atom       = { call | float | integer | string_lit | ident }
 expr       = { atom ~ (op ~ atom)* }
 tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 pipe_val   = { tuple_expr | expr }
 
-// ── Input list  (a, b, …) ─────────────────────────────────────────────────────
-input_list = { "(" ~ ident ~ ("," ~ ident)* ~ ")" }
+// ── Input list  (a, b, …) or () ──────────────────────────────────────────────
+input_list = { "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" }
 
 // ── Pipe statement ────────────────────────────────────────────────────────────
-pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ ";" }
+propagate_op = { "?" }
+pipe = { input_list ~ ":" ~ pipe_val ~ "->" ~ binding ~ propagate_op? ~ ";" }
 
 // ── Native backend escape block ──────────────────────────────────────────────
 // @<backend> ... @end  — verbatim code for a specific target backend.
@@ -63,7 +70,7 @@ native_block = @{ "@" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ (!"@end" ~ A
 builtin_call = { "builtin" ~ "::" ~ ident }
 
 // ── Bullet body: pure pipes, one native block, or a builtin reference ─────────
-bullet_body = { builtin_call | native_block | pipe+ }
+bullet_body = { builtin_call | native_block+ | pipe+ }
 
 // ── Function signature ────────────────────────────────────────────────────────
 param       = { ident ~ ":" ~ ty }
@@ -71,20 +78,24 @@ param_list  = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 output_decl = { "->" ~ ident ~ ":" ~ ty }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
+// ── Bullet (function declaration) ────────────────────────────────────────────
 bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 
-// ── Source file: pure bullet declarations, no metadata ───────────────────────
-source_file = { SOI ~ bullet+ ~ EOI }
+// ── Struct definitions (declared in inventory.bu, not in source files) ────────
+struct_field  = { ident ~ ":" ~ ty }
+struct_fields = { struct_field ~ ("," ~ struct_field)* ~ ","? }
+struct_def    = { "struct" ~ ident ~ "{" ~ struct_fields ~ "}" }
+
+// ── Source file: only bullet declarations — no structs, no metadata ───────────
+source_file = { SOI ~ bullet* ~ EOI }
 
 // ── Inventory file ────────────────────────────────────────────────────────────
 rank_val       = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
 dir_rank       = { "#rank" ~ ":" ~ rank_val ~ ";" }
-// #lang: ext; — declares the intended target language for this project.
-// Written by `bullang init --lang <ext>` and used by `bullang convert` as default.
 lang_val       = { "rs" | "py" | "c" | "cpp" | "go" }
 dir_lang       = { "#lang" ~ ":" ~ lang_val ~ ";" }
-// #lib: header_name; — declares an external library needed by this folder.
 lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
 dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
 inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
-inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ inv_entry* ~ EOI }
+
+inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ struct_def* ~ inv_entry* ~ EOI }

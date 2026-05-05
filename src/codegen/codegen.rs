@@ -16,6 +16,19 @@ pub fn emit_source(file: &SourceFile) -> String {
     out
 }
 
+// ── Struct emitter ────────────────────────────────────────────────────────────
+
+pub fn emit_struct_rs(s: &crate::ast::StructDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("#[derive(Debug, Clone)]\n"));
+    out.push_str(&format!("pub struct {} {{\n", s.name));
+    for field in &s.fields {
+        out.push_str(&format!("    pub {}: {},\n", field.name, bu_type_to_rust(&field.ty)));
+    }
+    out.push_str("}\n");
+    out
+}
+
 // ── main.bu → main.rs ─────────────────────────────────────────────────────────
 
 /// Emits src/main.rs from the parsed main.bu.
@@ -23,10 +36,7 @@ pub fn emit_source(file: &SourceFile) -> String {
 /// All other functions in main.bu (helpers) get `fn` but not `pub`.
 pub fn emit_main(file: &SourceFile, crate_name: &str) -> String {
     let mut out = String::new();
-
-    // Import the library crate so all transpiled functions are in scope
     out.push_str(&format!("use {}::*;\n\n", crate_name));
-
     for func in &file.bullets {
         if func.name == "main" {
             out.push_str(&emit_main_function(func));
@@ -35,7 +45,6 @@ pub fn emit_main(file: &SourceFile, crate_name: &str) -> String {
         }
         out.push('\n');
     }
-
     out
 }
 
@@ -81,9 +90,14 @@ pub fn emit_mod_rs(child_modules: &[String]) -> String {
     out
 }
 
-pub fn emit_lib_rs(child_modules: &[String]) -> String {
+pub fn emit_lib_rs(child_modules: &[String], structs: &[crate::ast::StructDef]) -> String {
     let mut out = String::new();
     out.push_str("#![allow(unused_imports)]\n\n");
+    // Struct definitions from inventory — always at the top, visible to all modules
+    for s in structs {
+        out.push_str(&emit_struct_rs(s));
+        out.push('\n');
+    }
     for module in child_modules {
         out.push_str(&format!("pub mod {};\n", module));
     }
@@ -248,25 +262,34 @@ fn emit_body(out: &mut String, body: &BulletBody, params: &[Param], backend: &Ba
                 let expr_str = emit_expr(&pipe.expr);
                 if i == last {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
-                    let binding = &pipe.binding;
-                    out.push_str(&format!("    {}\n", binding));
+                    out.push_str(&format!("    {}\n", pipe.binding));
+                } else if pipe.propagate {
+                    out.push_str(&format!("    let {} = {}?;\n", pipe.binding, expr_str));
                 } else {
                     out.push_str(&format!("    let {} = {};\n", pipe.binding, expr_str));
                 }
             }
         }
-        BulletBody::Native { backend, code } => {
-            match backend {
-                Backend::Unknown(kw) => {
-                    out.push_str(&format!(
-                        "    compile_error!(\"\'@{}\' is not a supported backend\")\n",
-                        kw
-                    ));
-                }
-                _ => {
-                    for line in code.lines() {
-                        if line.trim().is_empty() { out.push('\n'); }
-                        else { out.push_str(&format!("    {}\n", line)); }
+        BulletBody::Natives(blocks) => {
+            let block = blocks.iter().find(|b| b.backend == Backend::Rust)
+                .or_else(|| blocks.first());
+            if let Some(b) = block {
+                match b.backend {
+                    Backend::Rust | Backend::Unknown(_) => {
+                        if matches!(b.backend, Backend::Unknown(_)) {
+                            out.push_str(&format!(
+                                "    compile_error!(\"\'@{}\' is not a supported backend\")\n",
+                                b.backend.escape_keyword()
+                            ));
+                        } else {
+                            for line in b.code.lines() {
+                                if line.trim().is_empty() { out.push('\n'); }
+                                else { out.push_str(&format!("    {}\n", line)); }
+                            }
+                        }
+                    }
+                    _ => {
+                        out.push_str("    compile_error!(\"no @rust block provided for this function\")\n");
                     }
                 }
             }
@@ -295,7 +318,20 @@ fn emit_expr(expr: &Expr) -> String {
 fn emit_atom(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)            => s.clone(),
-        Atom::Integer(n)          => n.to_string(),
+        Atom::Float(n) => n.to_string(),
+        Atom::Integer(n)       => n.to_string(),
+        Atom::StringLit(s)        => format!("\"{}\"", s),
+        Atom::Interp(template)    => {
+            // Rust 1.58+: format!("Hello {name}!") works directly with named captures.
+            // Extract var names for the argument list.
+            let vars = interp_vars(template);
+            if vars.is_empty() {
+                format!("\"{}\"", template)
+            } else {
+                // The template already uses {name} syntax — Rust format! accepts this.
+                format!("format!(\"{}\")", template)
+            }
+        }
         Atom::Call { name, args } => {
             let args_str = args.iter().map(|a| match a {
                 CallArg::Value(s)     => s.clone(),
@@ -304,4 +340,21 @@ fn emit_atom(atom: &Atom) -> String {
             format!("{}({})", name, args_str)
         }
     }
+}
+
+/// Extract all `{ident}` variable names from an interpolation template.
+fn interp_vars(template: &str) -> Vec<&str> {
+    let mut vars = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open+1..];
+        if let Some(close) = after.find('}') {
+            let name = &after[..close];
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                vars.push(name);
+            }
+            rest = &after[close+1..];
+        } else { break; }
+    }
+    vars
 }

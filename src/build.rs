@@ -6,10 +6,6 @@ use std::fs;
 
 use crate::ast::{BuFile, Rank, Backend};
 use crate::codegen;
-use crate::codegen_c;
-use crate::codegen_cpp;
-use crate::codegen_go;
-use crate::codegen_python;
 use crate::parser;
 use crate::validator::{
     ValidationError, collect_bu_files, collect_subdirs,
@@ -27,8 +23,6 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
     let mut errors        = Vec::new();
     let mut files_written = 0;
 
-    // Python: package dir named after the crate so imports work.
-    // Rust: conventional src/ layout.
     let src_out = match backend {
         Backend::Python => out_dir.join(crate_name),
         Backend::Go | Backend::C | Backend::Cpp => out_dir.to_path_buf(),
@@ -42,11 +36,14 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         root, &src_out, backend, crate_name, has_main, &mut errors, &mut files_written,
     );
 
+    // Collect all structs from all inventories in the tree
+    let all_structs = collect_all_structs(root);
+
     match backend {
         Backend::Rust => {
             write_file(
                 &src_out.join("lib.rs"),
-                &codegen::emit_lib_rs(&child_modules),
+                &codegen::emit_lib_rs(&child_modules, &all_structs),
                 &mut files_written,
             );
             let cargo = if has_main {
@@ -59,42 +56,65 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         Backend::Python => {
             write_file(
                 &src_out.join("__init__.py"),
-                &codegen_python::emit_init_py(&child_modules),
+                &codegen::emit_init_py(&child_modules, &all_structs),
                 &mut files_written,
             );
         }
         Backend::C => {
-            let header_name  = format!("{}.h", crate_name);
-            let all_sources  = collect_all_sources(root);
+            let header_name = format!("{}.h", crate_name);
+            let all_sources = collect_all_sources(root);
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
-            let libs = collect_all_libs(root);
-            let header = codegen_c::emit_header_c(crate_name, &src_refs, &libs);
+            let libs   = collect_all_libs(root);
+            let header = codegen::emit_header_c(crate_name, &src_refs, &libs, &all_structs);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
+
+            let needs_ft = src_refs.iter().any(|(_, sf)| codegen::needs_foreign_types(sf));
+            if needs_ft {
+                write_file(
+                    &out_dir.join("foreign_types.h"),
+                    include_str!("foreign_types.h"),
+                    &mut files_written,
+                );
+            }
 
             let mut all_c: Vec<String> = child_modules.iter()
                 .map(|m| format!("{}.c", m)).collect();
             if has_main { all_c.push("main.c".to_string()); }
-            let makefile = codegen_c::emit_makefile(crate_name, &all_c, has_main);
+            let makefile = codegen::emit_makefile(crate_name, &all_c, has_main);
             write_file(&out_dir.join("Makefile"), &makefile, &mut files_written);
         }
         Backend::Cpp => {
-            let header_name  = format!("{}.hpp", crate_name);
-            let all_sources  = collect_all_sources(root);
+            let header_name = format!("{}.hpp", crate_name);
+            let all_sources = collect_all_sources(root);
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
-            let libs = collect_all_libs(root);
-            let header = codegen_cpp::emit_header_cpp(crate_name, &src_refs, crate_name, &libs);
+            let libs   = collect_all_libs(root);
+            let header = codegen::emit_header_cpp(crate_name, &src_refs, crate_name, &libs, &all_structs);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
 
             let mut all_cpp: Vec<String> = child_modules.iter()
                 .map(|m| format!("{}.cpp", m)).collect();
             if has_main { all_cpp.push("main.cpp".to_string()); }
-            let makefile = codegen_cpp::emit_makefile_cpp(crate_name, &all_cpp, has_main);
+            let makefile = codegen::emit_makefile_cpp(crate_name, &all_cpp, has_main);
             write_file(&out_dir.join("Makefile"), &makefile, &mut files_written);
         }
         Backend::Go => {
-            write_file(&out_dir.join("go.mod"), &codegen_go::emit_go_mod(crate_name), &mut files_written);
+            write_file(&out_dir.join("go.mod"), &codegen::emit_go_mod(crate_name), &mut files_written);
+
+            // types.go — inventory structs + Tuple foreign types
+            let all_sources = collect_all_sources(root);
+            let src_refs: Vec<(String, &crate::ast::SourceFile)> =
+                all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
+            let tuple_types = codegen::collect_tuple_types(&src_refs);
+            if !all_structs.is_empty() || !tuple_types.is_empty() {
+                let pkg = if has_main { "main" } else { crate_name };
+                write_file(
+                    &out_dir.join("types.go"),
+                    &codegen::emit_types_go(pkg, &all_structs, &tuple_types),
+                    &mut files_written,
+                );
+            }
         }
         Backend::Unknown(_) => {}
     }
@@ -206,10 +226,10 @@ fn emit_folder(
             };
             let content  = match backend {
                 Backend::Rust        => codegen::emit_source(&sf),
-                Backend::Python      => codegen_python::emit_source_py(&sf),
-                Backend::C           => codegen_c::emit_source_c(&sf, &header_name),
-                Backend::Cpp         => codegen_cpp::emit_source_cpp(&sf, &hpp_name),
-                Backend::Go          => codegen_go::emit_source_go(&sf, &go_pkg),
+                Backend::Python      => codegen::emit_source_py(&sf),
+                Backend::C           => codegen::emit_source_c(&sf, &header_name),
+                Backend::Cpp         => codegen::emit_source_cpp(&sf, &hpp_name),
+                Backend::Go          => codegen::emit_source_go(&sf, &go_pkg),
                 Backend::Unknown(_)  => continue,
             };
             write_file(&out_path, &content, written);
@@ -237,7 +257,7 @@ fn emit_mod_file(dir: &Path, child_modules: &[String], backend: &Backend, writte
         Backend::Python => {
             write_file(
                 &dir.join("__init__.py"),
-                &codegen_python::emit_init_py(child_modules),
+                &codegen::emit_init_py(child_modules, &[]),
                 written,
             );
         }
@@ -278,28 +298,28 @@ fn emit_main_file(
         Backend::Python => {
             write_file(
                 &out_dir.join("__main__.py"),
-                &codegen_python::emit_main_py(&sf, crate_name),
+                &codegen::emit_main_py(&sf, crate_name),
                 written,
             );
         }
         Backend::C => {
             write_file(
                 &out_dir.join("main.c"),
-                &codegen_c::emit_main_c(&sf, &header_name),
+                &codegen::emit_main_c(&sf, &header_name),
                 written,
             );
         }
         Backend::Cpp => {
             write_file(
                 &out_dir.join("main.cpp"),
-                &codegen_cpp::emit_main_cpp(&sf, &hpp_name, crate_name),
+                &codegen::emit_main_cpp(&sf, &hpp_name, crate_name),
                 written,
             );
         }
         Backend::Go => {
             write_file(
                 &out_dir.join("main.go"),
-                &codegen_go::emit_main_go(&sf, crate_name),
+                &codegen::emit_main_go(&sf, crate_name),
                 written,
             );
         }
@@ -344,30 +364,31 @@ fn check_file_backend(path: &Path, backend: &Backend, errors: &mut Vec<Validatio
 
     let path_str = path.display().to_string();
     for func in &sf.bullets {
-        if let crate::ast::BulletBody::Native { backend: block_backend, .. } = &func.body {
-            if block_backend != backend {
-                let expected_kw = backend.escape_keyword();
-                let actual_kw   = block_backend.escape_keyword();
-                if let Backend::Unknown(_) = block_backend {
-                    continue; // already caught by validator
-                }
-                // @c blocks are also valid in C++ projects
-                let compat = match (block_backend, backend) {
-                    (Backend::C, Backend::Cpp) => true,
+        if let crate::ast::BulletBody::Natives(blocks) = &func.body {
+            // With multi-block functions, compatibility means at least ONE block
+            // matches the target backend. If none match, report an error.
+            let has_match = blocks.iter().any(|b| {
+                match (&b.backend, backend) {
+                    (Backend::C, Backend::Cpp)   => true,
+                    (Backend::Cpp, Backend::Cpp) => true,
                     (a, b) => a == b,
-                };
-                if !compat {
-                    errors.push(ValidationError {
-                        file:    path_str.clone(),
-                        line:    func.span.line,
-                        col:     func.span.col,
-                        message: format!(
-                            "Function '{}': '@{}' block cannot be used when building \
-                             for '{}' backend. Use '@{}' instead.",
-                            func.name, actual_kw, backend.name(), expected_kw
-                        ),
-                    });
                 }
+            });
+            if !has_match && !blocks.is_empty() {
+                let available: Vec<String> = blocks.iter()
+                    .map(|b| b.backend.escape_keyword().to_string())
+                    .collect();
+                errors.push(ValidationError {
+                    file:    path_str.clone(),
+                    line:    func.span.line,
+                    col:     func.span.col,
+                    message: format!(
+                        "Function '{}': no '@{}' escape block provided. \
+                         Available blocks: @{}. Add a '@{}' block for this backend.",
+                        func.name, backend.escape_keyword(),
+                        available.join(", @"), backend.escape_keyword()
+                    ),
+                });
             }
         }
     }
@@ -401,6 +422,27 @@ fn collect_all_libs(dir: &Path) -> Vec<String> {
 
 /// Walk the entire source tree and collect (stem_name, SourceFile) for every
 /// .bu source file. Used by C/C++ header generation to produce forward decls.
+fn collect_all_structs(dir: &Path) -> Vec<crate::ast::StructDef> {
+    let mut result = Vec::new();
+    let inv = match read_inventory(dir) {
+        Ok(i) => i, Err(_) => return result,
+    };
+    // Deduplicate by name — a struct defined in a child propagates up
+    for s in inv.structs {
+        if !result.iter().any(|r: &crate::ast::StructDef| r.name == s.name) {
+            result.push(s);
+        }
+    }
+    for subdir in collect_subdirs(dir) {
+        for s in collect_all_structs(&subdir) {
+            if !result.iter().any(|r: &crate::ast::StructDef| r.name == s.name) {
+                result.push(s);
+            }
+        }
+    }
+    result
+}
+
 fn collect_all_sources(dir: &Path) -> Vec<(String, crate::ast::SourceFile)> {
     let mut result = Vec::new();
     let inv = match read_inventory(dir) {
