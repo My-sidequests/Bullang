@@ -1,0 +1,119 @@
+//! Standard library — universal builtin functions.
+//!
+//! Only builtins that can be implemented in ALL five backends are included.
+//! Collection builtins (map, filter, sort, etc.) require generic types that
+//! C cannot express, so they are excluded. What remains is a clean set of
+//! 13 math and string primitives that work identically everywhere.
+//!
+//! Syntax in source files:  builtin::abs   builtin::to_upper   etc.
+//!
+//! Each builtin lives in its own submodule and exposes:
+//!   - `META : (&str, &str, &str)`  — (name, signature, description)
+//!   - `emit(params, backend)`      — code-generation entry point
+//!
+//! Backends: Rust, Python, C, C++, Go
+
+use crate::ast::{Backend, Param};
+
+mod abs;
+mod clamp;
+mod ends_with;
+mod parse_i64;
+mod pow;
+mod powf;
+mod replace_str;
+mod sqrt;
+mod starts_with;
+mod to_lower;
+mod to_string;
+mod to_upper;
+mod trim;
+
+// ── Universal builtin set ─────────────────────────────────────────────────────
+
+/// The 13 universal builtins — available in every backend.
+pub const BUILTINS: &[(&str, &str, &str)] = &[
+    abs::META,
+    pow::META,
+    powf::META,
+    sqrt::META,
+    clamp::META,
+    to_upper::META,
+    to_lower::META,
+    trim::META,
+    starts_with::META,
+    ends_with::META,
+    replace_str::META,
+    to_string::META,
+    parse_i64::META,
+];
+
+/// Returns true if the name is a known universal builtin.
+pub fn is_known_builtin(name: &str) -> bool {
+    BUILTINS.iter().any(|(n, _, _)| *n == name)
+}
+
+/// Return the builtin catalogue.
+pub fn list_builtins() -> Vec<(&'static str, &'static str, &'static str)> {
+    BUILTINS.to_vec()
+}
+
+// ── Dispatch ──────────────────────────────────────────────────────────────────
+
+pub fn emit_builtin(name: &str, params: &[Param], backend: &Backend) -> Result<String, String> {
+    if !is_known_builtin(name) {
+        return Err(format!(
+            "'builtin::{}' is not a known builtin. \
+             Run `bullang stdlib --list` to see available builtins.",
+            name
+        ));
+    }
+    match name {
+        "abs"         => abs::emit(params, backend),
+        "pow"         => pow::emit(params, backend),
+        "powf"        => powf::emit(params, backend),
+        "sqrt"        => sqrt::emit(params, backend),
+        "clamp"       => clamp::emit(params, backend),
+        "to_upper"    => to_upper::emit(params, backend),
+        "to_lower"    => to_lower::emit(params, backend),
+        "trim"        => trim::emit(params, backend),
+        "starts_with" => starts_with::emit(params, backend),
+        "ends_with"   => ends_with::emit(params, backend),
+        "replace_str" => replace_str::emit(params, backend),
+        "to_string"   => to_string::emit(params, backend),
+        "parse_i64"   => parse_i64::emit(params, backend),
+        _             => unreachable!(),
+    }
+}
+
+// ── Shared helpers (private to this module; accessible to all submodules) ─────
+
+fn p(params: &[Param]) -> Vec<&str> {
+    params.iter().map(|p| p.name.as_str()).collect()
+}
+
+/// Escape a param name that might collide with a Python reserved word.
+fn py_esc(name: &str) -> &str {
+    match name {
+        "from"   => "from_",   "import" => "import_", "class"  => "class_",
+        "return" => "return_", "pass"   => "pass_",   "for"    => "for_",
+        "while"  => "while_",  "in"     => "in_",     "not"    => "not_",
+        "and"    => "and_",    "or"     => "or_",     "if"     => "if_",
+        "else"   => "else_",   "lambda" => "lambda_", "with"   => "with_",
+        "as"     => "as_",     "try"    => "try_",    "except" => "except_",
+        "raise"  => "raise_",  "del"    => "del_",
+        other    => other,
+    }
+}
+
+/// Assert `params` has exactly `n` entries; return their name slices.
+fn need<'a>(name: &str, params: &'a [Param], n: usize) -> Result<Vec<&'a str>, String> {
+    let v = p(params);
+    if v.len() != n {
+        return Err(format!(
+            "'builtin::{}' requires {} parameter(s) but the function declares {}",
+            name, n, v.len()
+        ));
+    }
+    Ok(v)
+}
