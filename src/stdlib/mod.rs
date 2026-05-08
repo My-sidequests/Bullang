@@ -15,10 +15,14 @@
 use crate::ast::{Backend, Param};
 
 mod abs;
+mod args;
 mod clamp;
 mod ends_with;
+mod fd_in;
+mod fd_out;
 mod insertion_sort;
 mod merge_sort;
+mod open;
 mod parse_i64;
 mod pow;
 mod powf;
@@ -28,6 +32,7 @@ mod replace_str;
 mod sqrt;
 mod starts_with;
 mod swap;
+mod time;
 mod to_lower;
 mod to_string;
 mod to_upper;
@@ -35,13 +40,15 @@ mod trim;
 
 // ── Universal builtin set ─────────────────────────────────────────────────────
 
-/// The 18 universal builtins — available in every backend.
+/// The 24 universal builtins — available in every backend.
 pub const BUILTINS: &[(&str, &str, &str)] = &[
+    // math
     abs::META,
     pow::META,
     powf::META,
     sqrt::META,
     clamp::META,
+    // string
     to_upper::META,
     to_lower::META,
     trim::META,
@@ -50,11 +57,19 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     replace_str::META,
     to_string::META,
     parse_i64::META,
+    // algorithms
     swap::META,
     insertion_sort::META,
     quick_sort::META,
     merge_sort::META,
     radix_sort::META,
+    // io
+    fd_in::META,
+    fd_out::META,
+    open::META,
+    time::META,
+    // system
+    args::META,
 ];
 
 /// Returns true if the name is a known universal builtin.
@@ -96,6 +111,11 @@ pub fn emit_builtin(name: &str, params: &[Param], backend: &Backend) -> Result<S
         "quick_sort"     => quick_sort::emit(params, backend),
         "merge_sort"     => merge_sort::emit(params, backend),
         "radix_sort"     => radix_sort::emit(params, backend),
+        "in"             => fd_in::emit(params, backend),
+        "out"            => fd_out::emit(params, backend),
+        "open"           => open::emit(params, backend),
+        "time"           => time::emit(params, backend),
+        "args"           => args::emit(params, backend),
         _             => unreachable!(),
     }
 }
