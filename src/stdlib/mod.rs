@@ -17,11 +17,14 @@ use crate::ast::{Backend, Param};
 mod abs;
 mod args;
 mod clamp;
+mod close;
 mod ends_with;
 mod fd_in;
 mod fd_out;
 mod insertion_sort;
+mod max;
 mod merge_sort;
+mod min;
 mod open;
 mod parse_i64;
 mod pow;
@@ -40,7 +43,7 @@ mod trim;
 
 // ── Universal builtin set ─────────────────────────────────────────────────────
 
-/// The 24 universal builtins — available in every backend.
+/// The 27 universal builtins — available in every backend.
 pub const BUILTINS: &[(&str, &str, &str)] = &[
     // math
     abs::META,
@@ -48,6 +51,8 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     powf::META,
     sqrt::META,
     clamp::META,
+    min::META,
+    max::META,
     // string
     to_upper::META,
     to_lower::META,
@@ -67,6 +72,7 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     fd_in::META,
     fd_out::META,
     open::META,
+    close::META,
     time::META,
     // system
     args::META,
@@ -98,6 +104,8 @@ pub fn emit_builtin(name: &str, params: &[Param], backend: &Backend) -> Result<S
         "powf"           => powf::emit(params, backend),
         "sqrt"           => sqrt::emit(params, backend),
         "clamp"          => clamp::emit(params, backend),
+        "min"            => min::emit(params, backend),
+        "max"            => max::emit(params, backend),
         "to_upper"       => to_upper::emit(params, backend),
         "to_lower"       => to_lower::emit(params, backend),
         "trim"           => trim::emit(params, backend),
@@ -114,6 +122,7 @@ pub fn emit_builtin(name: &str, params: &[Param], backend: &Backend) -> Result<S
         "in"             => fd_in::emit(params, backend),
         "out"            => fd_out::emit(params, backend),
         "open"           => open::emit(params, backend),
+        "close"          => close::emit(params, backend),
         "time"           => time::emit(params, backend),
         "args"           => args::emit(params, backend),
         _             => unreachable!(),
