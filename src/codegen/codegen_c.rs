@@ -270,10 +270,9 @@ pub fn emit_atom_c(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
         }
+        Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom_c(rhs)),
     }
 }
-
-/// Convert an interpolation template to a (printf_fmt, var_names) pair.
 /// `"Hello {name}!"` → `("Hello %s!", ["name"])`
 fn interp_to_printf(template: &str) -> (String, Vec<&str>) {
     let mut fmt_str = String::new();

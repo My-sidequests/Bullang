@@ -41,9 +41,13 @@ bullet_ref = { "&" ~ ident }
 call_arg   = { bullet_ref | float | integer | string_lit | ident }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
-op         = { "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
+op         = { "&&" | "||" | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
+unary_op   = { "!" | "-" }
+unary_expr = { unary_op ~ atom }
 call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
-atom       = { call | float | integer | string_lit | ident }
+// unary_expr is listed last so "-5" matches the integer rule first (which allows a leading "-"),
+// and only "-x" (non-digit after the minus) falls through to unary_expr.
+atom       = { call | float | integer | string_lit | ident | unary_expr }
 expr       = { atom ~ (op ~ atom)* }
 tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 pipe_val   = { tuple_expr | expr }

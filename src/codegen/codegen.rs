@@ -339,6 +339,7 @@ fn emit_atom(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
         }
+        Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom(rhs)),
     }
 }
 

@@ -229,6 +229,20 @@ fn infer_expr(
                 return string_ty;
             }
 
+            // Boolean operators: both sides must be bool, result is bool
+            let bool_ty = BuType::Named("bool".to_string());
+            if b.op == "&&" || b.op == "||" {
+                if lhs_ty != bool_ty || rhs_ty != bool_ty {
+                    errors.push(terr(path, span, format!(
+                        "Function '{}': operator '{}' requires bool on both sides \
+                         (left: {}, right: {}).",
+                        func_name, b.op, lhs_ty.to_rust(), rhs_ty.to_rust()
+                    )));
+                    return BuType::Unknown;
+                }
+                return bool_ty;
+            }
+
             // Comparison operators return bool
             let bool_ty = BuType::Named("bool".to_string());
             let cmp_ops = ["==", "!=", "<", ">", "<=", ">="];
@@ -323,6 +337,39 @@ fn infer_atom(
             }
 
             sig.returns.clone()
+        }
+
+        Atom::Unary { op, rhs } => {
+            let rhs_ty = infer_atom(rhs, local, env, is_skirmish, func_name, path, span, errors);
+            let bool_ty    = BuType::Named("bool".to_string());
+            match op.as_str() {
+                "!" => {
+                    if rhs_ty != BuType::Unknown && rhs_ty != bool_ty {
+                        errors.push(terr(path, span, format!(
+                            "Function '{}': '!' requires a bool operand, got {}.",
+                            func_name, rhs_ty.to_rust()
+                        )));
+                        return BuType::Unknown;
+                    }
+                    bool_ty
+                }
+                "-" => {
+                    if rhs_ty != BuType::Unknown && !rhs_ty.is_numeric() {
+                        errors.push(terr(path, span, format!(
+                            "Function '{}': unary '-' requires a numeric operand, got {}.",
+                            func_name, rhs_ty.to_rust()
+                        )));
+                        return BuType::Unknown;
+                    }
+                    rhs_ty
+                }
+                other => {
+                    errors.push(terr(path, span, format!(
+                        "Function '{}': unknown unary operator '{}'.", func_name, other
+                    )));
+                    BuType::Unknown
+                }
+            }
         }
     }
 }

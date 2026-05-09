@@ -420,6 +420,13 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
         Rule::integer    => Atom::Integer(inner.as_str().parse().unwrap()),
         Rule::ident      => Atom::Ident(inner.as_str().to_string()),
         Rule::string_lit => parse_string_atom(inner.as_str()),
+        Rule::unary_expr => {
+            let mut ui  = inner.into_inner();
+            let op      = ui.next().unwrap().as_str().to_string();
+            let rhs_pair = ui.next().unwrap();
+            let rhs     = parse_atom(rhs_pair);
+            Atom::Unary { op, rhs: Box::new(rhs) }
+        }
         other => unreachable!("unexpected atom: {:?}", other),
     }
 }

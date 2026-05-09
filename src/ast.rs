@@ -185,6 +185,8 @@ pub enum Atom {
     /// Each codegen resolves the placeholders into its own format mechanism.
     Interp(String),
     Call { name: String, args: Vec<CallArg> },
+    /// Unary expression: `!b` or `-x`
+    Unary { op: String, rhs: Box<Atom> },
 }
 
 #[derive(Debug, Clone)]

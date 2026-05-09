@@ -352,10 +352,9 @@ fn emit_atom_go(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", go_name, args_str)
         }
+        Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom_go(rhs)),
     }
 }
-
-/// Convert an interpolation template to a (fmt_string, var_names) pair for Sprintf.
 /// `"Hello {name}!"` → `("Hello %v!", ["name"])`
 fn interp_to_sprintf(template: &str) -> (String, Vec<&str>) {
     let mut fmt_str = String::new();

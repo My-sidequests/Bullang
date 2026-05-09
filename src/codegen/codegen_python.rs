@@ -186,9 +186,15 @@ fn emit_body_py(out: &mut String, body: &BulletBody, params: &[Param]) {
 fn emit_expr_py(expr: &Expr) -> String {
     match expr {
         Expr::Atom(a)      => emit_atom_py(a),
-        Expr::BinOp(b)     => format!(
-            "{} {} {}", emit_atom_py(&b.lhs), b.op, emit_atom_py(&b.rhs)
-        ),
+        Expr::BinOp(b)     => {
+            // Python uses keyword operators instead of symbols
+            let op = match b.op.as_str() {
+                "&&" => "and",
+                "||" => "or",
+                other => other,
+            };
+            format!("{} {} {}", emit_atom_py(&b.lhs), op, emit_atom_py(&b.rhs))
+        }
         Expr::Tuple(exprs) => format!(
             "({})", exprs.iter().map(emit_expr_py).collect::<Vec<_>>().join(", ")
         ),
@@ -208,6 +214,11 @@ fn emit_atom_py(atom: &Atom) -> String {
                 CallArg::BulletRef(s) => s.clone(),
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
+        }
+        Atom::Unary { op, rhs } => {
+            // Python uses `not` for boolean negation; `-` is the same
+            let py_op = if op == "!" { "not " } else { op.as_str() };
+            format!("({}{})", py_op, emit_atom_py(rhs))
         }
     }
 }
