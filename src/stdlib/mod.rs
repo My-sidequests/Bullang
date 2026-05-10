@@ -22,6 +22,7 @@ mod ends_with;
 mod fd_in;
 mod fd_out;
 mod insertion_sort;
+mod len;
 mod max;
 mod merge_sort;
 mod min;
@@ -43,7 +44,7 @@ mod trim;
 
 // ── Universal builtin set ─────────────────────────────────────────────────────
 
-/// The 27 universal builtins — available in every backend.
+/// The 28 universal builtins — available in every backend.
 pub const BUILTINS: &[(&str, &str, &str)] = &[
     // math
     abs::META,
@@ -62,6 +63,7 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     replace_str::META,
     to_string::META,
     parse_i64::META,
+    len::META,
     // algorithms
     swap::META,
     insertion_sort::META,
@@ -114,6 +116,7 @@ pub fn emit_builtin(name: &str, params: &[Param], backend: &Backend) -> Result<S
         "replace_str"    => replace_str::emit(params, backend),
         "to_string"      => to_string::emit(params, backend),
         "parse_i64"      => parse_i64::emit(params, backend),
+        "len"            => len::emit(params, backend),
         "swap"           => swap::emit(params, backend),
         "insertion_sort" => insertion_sort::emit(params, backend),
         "quick_sort"     => quick_sort::emit(params, backend),

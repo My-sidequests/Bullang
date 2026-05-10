@@ -353,6 +353,14 @@ fn emit_atom_go(atom: &Atom) -> String {
             format!("{}({})", go_name, args_str)
         }
         Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom_go(rhs)),
+        Atom::FieldAccess { base, fields } => {
+            let pascal_fields: Vec<String> = fields.iter().map(|f| to_pascal_case(f)).collect();
+            format!("{}.{}", base, pascal_fields.join("."))
+        }
+        Atom::Index { base, idx } =>
+            format!("string([]rune({})[{}])", base, emit_expr_go(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("string([]rune({})[{}:{}])", base, emit_expr_go(from), emit_expr_go(to)),
     }
 }
 /// `"Hello {name}!"` → `("Hello %v!", ["name"])`

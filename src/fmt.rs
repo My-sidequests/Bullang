@@ -176,6 +176,11 @@ fn format_atom(atom: &Atom) -> String {
             format!("{}({})", name, args_str)
         }
         Atom::Unary { op, rhs } => format!("({}{})", op, format_atom(rhs)),
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}[{}]", base, format_expr(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("{}[{}..{}]", base, format_expr(from), format_expr(to)),
     }
 }
 

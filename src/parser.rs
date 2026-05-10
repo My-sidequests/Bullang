@@ -416,15 +416,34 @@ fn parse_atom(pair: Pair<Rule>) -> Atom {
             let args   = ci.map(parse_call_arg).collect();
             Atom::Call { name, args }
         }
-        Rule::float      => Atom::Float(inner.as_str().parse().unwrap()),
-        Rule::integer    => Atom::Integer(inner.as_str().parse().unwrap()),
-        Rule::ident      => Atom::Ident(inner.as_str().to_string()),
-        Rule::string_lit => parse_string_atom(inner.as_str()),
+        Rule::float        => Atom::Float(inner.as_str().parse().unwrap()),
+        Rule::integer      => Atom::Integer(inner.as_str().parse().unwrap()),
+        Rule::ident        => Atom::Ident(inner.as_str().to_string()),
+        Rule::string_lit   => parse_string_atom(inner.as_str()),
+        Rule::field_access => {
+            let mut parts = inner.into_inner();
+            let base   = parts.next().unwrap().as_str().to_string();
+            let fields = parts.map(|p| p.as_str().to_string()).collect();
+            Atom::FieldAccess { base, fields }
+        }
+        Rule::index_expr => {
+            let mut parts = inner.into_inner();
+            let base = parts.next().unwrap().as_str().to_string();
+            let idx  = parse_expr(parts.next().unwrap());
+            Atom::Index { base, idx: Box::new(idx) }
+        }
+        Rule::slice_expr => {
+            let mut parts = inner.into_inner();
+            let base = parts.next().unwrap().as_str().to_string();
+            let from = parse_expr(parts.next().unwrap());
+            let to   = parse_expr(parts.next().unwrap());
+            Atom::Slice { base, from: Box::new(from), to: Box::new(to) }
+        }
         Rule::unary_expr => {
-            let mut ui  = inner.into_inner();
-            let op      = ui.next().unwrap().as_str().to_string();
+            let mut ui   = inner.into_inner();
+            let op       = ui.next().unwrap().as_str().to_string();
             let rhs_pair = ui.next().unwrap();
-            let rhs     = parse_atom(rhs_pair);
+            let rhs      = parse_atom(rhs_pair);
             Atom::Unary { op, rhs: Box::new(rhs) }
         }
         other => unreachable!("unexpected atom: {:?}", other),
@@ -468,10 +487,13 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
         Rule::bullet_ref => CallArg::BulletRef(
             inner.into_inner().next().unwrap().as_str().to_string()
         ),
-        Rule::float      => CallArg::Value(inner.as_str().to_string()),
-        Rule::integer    => CallArg::Value(inner.as_str().to_string()),
-        Rule::ident      => CallArg::Value(inner.as_str().to_string()),
-        Rule::string_lit => CallArg::Value(inner.as_str().to_string()),
+        Rule::float        => CallArg::Value(inner.as_str().to_string()),
+        Rule::integer      => CallArg::Value(inner.as_str().to_string()),
+        Rule::ident        => CallArg::Value(inner.as_str().to_string()),
+        Rule::string_lit   => CallArg::Value(inner.as_str().to_string()),
+        Rule::field_access => CallArg::Value(inner.as_str().to_string()),
+        Rule::index_expr   => CallArg::Value(inner.as_str().to_string()),
+        Rule::slice_expr   => CallArg::Value(inner.as_str().to_string()),
         other => unreachable!("unexpected call_arg: {:?}", other),
     }
 }

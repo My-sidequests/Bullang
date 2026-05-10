@@ -220,6 +220,11 @@ fn emit_atom_py(atom: &Atom) -> String {
             let py_op = if op == "!" { "not " } else { op.as_str() };
             format!("({}{})", py_op, emit_atom_py(rhs))
         }
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}[{}]", base, emit_expr_py(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("{}[{}:{}]", base, emit_expr_py(from), emit_expr_py(to)),
     }
 }
 

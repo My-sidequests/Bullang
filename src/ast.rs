@@ -163,7 +163,8 @@ pub struct BulletSig {
     pub returns: BuType,
 }
 
-pub type TypeEnv = HashMap<String, BulletSig>;
+pub type TypeEnv   = HashMap<String, BulletSig>;
+pub type StructEnv = HashMap<String, StructDef>;
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
@@ -187,6 +188,12 @@ pub enum Atom {
     Call { name: String, args: Vec<CallArg> },
     /// Unary expression: `!b` or `-x`
     Unary { op: String, rhs: Box<Atom> },
+    /// Struct field access: `point.x` or `player.position.y`
+    FieldAccess { base: String, fields: Vec<String> },
+    /// String character index: `s[i]` → char
+    Index { base: String, idx: Box<Expr> },
+    /// String slice: `s[i..j]` → String
+    Slice { base: String, from: Box<Expr>, to: Box<Expr> },
 }
 
 #[derive(Debug, Clone)]

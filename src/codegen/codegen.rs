@@ -340,6 +340,12 @@ fn emit_atom(atom: &Atom) -> String {
             format!("{}({})", name, args_str)
         }
         Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom(rhs)),
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}.chars().nth(({}) as usize).unwrap_or('\\0')", base, emit_expr(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("{}.chars().skip({}).take(({}) - ({})).collect::<String>()",
+                base, emit_expr(from), emit_expr(to), emit_expr(from)),
     }
 }
 

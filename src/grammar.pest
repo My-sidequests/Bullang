@@ -38,17 +38,25 @@ string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 // ── Call arguments ────────────────────────────────────────────────────────────
 bullet_ref = { "&" ~ ident }
-call_arg   = { bullet_ref | float | integer | string_lit | ident }
+call_arg   = { bullet_ref | float | integer | string_lit | slice_expr | index_expr | field_access | ident }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
-op         = { "&&" | "||" | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
-unary_op   = { "!" | "-" }
-unary_expr = { unary_op ~ atom }
-call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
-// unary_expr is listed last so "-5" matches the integer rule first (which allows a leading "-"),
-// and only "-x" (non-digit after the minus) falls through to unary_expr.
-atom       = { call | float | integer | string_lit | ident | unary_expr }
-expr       = { atom ~ (op ~ atom)* }
+op           = { "&&" | "||" | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
+unary_op     = { "!" | "-" }
+unary_expr   = { unary_op ~ atom }
+field_access = { ident ~ ("." ~ ident)+ }
+// slice_expr must precede index_expr: both open with ident ~ "[" ~ expr,
+// slice disambiguates with ".." after the first expression.
+// ".." is not in `op` so `expr` stops before it — no ambiguity.
+slice_expr   = { ident ~ "[" ~ expr ~ ".." ~ expr ~ "]" }
+index_expr   = { ident ~ "[" ~ expr ~ "]" }
+call         = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
+// Order: call wins over slice/index (starts with ident ~ "(").
+// slice before index (same prefix, slice needs ".." lookahead).
+// field_access before ident ("foo.bar" must not match as just "foo").
+// unary_expr last ("-5" matches integer's built-in "-"? prefix first).
+atom         = { call | float | integer | string_lit | slice_expr | index_expr | field_access | ident | unary_expr }
+expr         = { atom ~ (op ~ atom)* }
 tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 pipe_val   = { tuple_expr | expr }
 

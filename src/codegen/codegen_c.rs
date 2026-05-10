@@ -271,6 +271,12 @@ pub fn emit_atom_c(atom: &Atom) -> String {
             format!("{}({})", name, args_str)
         }
         Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom_c(rhs)),
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}[{}]", base, emit_expr_c(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("strndup(({}) + ({}), (size_t)(({})-({0})))",
+                base, emit_expr_c(from), emit_expr_c(to)),
     }
 }
 /// `"Hello {name}!"` → `("Hello %s!", ["name"])`
