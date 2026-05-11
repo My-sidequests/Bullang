@@ -410,6 +410,12 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
 fn parse_atom(pair: Pair<Rule>) -> Atom {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        Rule::builtin_expr => {
+            let mut parts = inner.into_inner();
+            let name = parts.next().unwrap().as_str().to_string();
+            let args = parts.map(parse_expr).collect();
+            Atom::BuiltinExpr { name, args }
+        }
         Rule::call => {
             let mut ci = inner.into_inner();
             let name   = ci.next().unwrap().as_str().to_string();

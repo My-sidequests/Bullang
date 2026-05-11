@@ -249,6 +249,37 @@ pub fn emit_atom_c(atom: &Atom) -> String {
         Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
+        Atom::BuiltinExpr { name, args } => {
+            match name.as_str() {
+                "assert" => {
+                    let cond = emit_expr_c(&args[0]);
+                    format!(
+                        "({{ int __r = (int)({cond}); \
+                         if (!__r) {{ fprintf(stderr, \"[assert] failed\\n\"); }} \
+                         __r; }})"
+                    )
+                }
+                "assert_eq" => {
+                    let lhs = emit_expr_c(&args[0]);
+                    let rhs = emit_expr_c(&args[1]);
+                    format!(
+                        "({{ int __ok = (({lhs}) == ({rhs})); \
+                         if (!__ok) {{ fprintf(stderr, \"[assert_eq] failed\\n\"); }} \
+                         __ok; }})"
+                    )
+                }
+                "assert_ne" => {
+                    let lhs = emit_expr_c(&args[0]);
+                    let rhs = emit_expr_c(&args[1]);
+                    format!(
+                        "({{ int __ok = (({lhs}) != ({rhs})); \
+                         if (!__ok) {{ fprintf(stderr, \"[assert_ne] values were equal\\n\"); }} \
+                         __ok; }})"
+                    )
+                }
+                other => format!("0 /* builtin::{other} not supported as expression */"),
+            }
+        }
         Atom::Interp(template) => {
             // C/C++: produce a snprintf call into a stack buffer.
             // "Hello {name}!" → snprintf(buf, sizeof(buf), "Hello %s!", name)

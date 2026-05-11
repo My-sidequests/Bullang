@@ -181,6 +181,10 @@ fn format_atom(atom: &Atom) -> String {
             format!("{}[{}]", base, format_expr(idx)),
         Atom::Slice { base, from, to } =>
             format!("{}[{}..{}]", base, format_expr(from), format_expr(to)),
+        Atom::BuiltinExpr { name, args } => {
+            let args_str = args.iter().map(format_expr).collect::<Vec<_>>().join(", ");
+            format!("builtin::{}({})", name, args_str)
+        }
     }
 }
 

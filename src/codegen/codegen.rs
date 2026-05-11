@@ -315,6 +315,38 @@ fn emit_expr(expr: &Expr) -> String {
     }
 }
 
+fn emit_builtin_expr(name: &str, args: &[Expr], emit: fn(&Expr) -> String) -> String {
+    match name {
+        "assert" => {
+            let cond = args.first().map(|e| emit(e)).unwrap_or_default();
+            format!(
+                "{{ let __r = ({cond}); \
+                 if !__r {{ eprintln!(\"[assert] failed: {{}}\", stringify!({cond})); }} \
+                 __r }}"
+            )
+        }
+        "assert_eq" => {
+            let lhs = emit(&args[0]);
+            let rhs = emit(&args[1]);
+            format!(
+                "{{ let __l = {lhs}; let __r = {rhs}; let __ok = __l == __r; \
+                 if !__ok {{ eprintln!(\"[assert_eq] expected {{:?}}, got {{:?}}\", __r, __l); }} \
+                 __ok }}"
+            )
+        }
+        "assert_ne" => {
+            let lhs = emit(&args[0]);
+            let rhs = emit(&args[1]);
+            format!(
+                "{{ let __l = {lhs}; let __r = {rhs}; let __ok = __l != __r; \
+                 if !__ok {{ eprintln!(\"[assert_ne] expected values to differ, both were {{:?}}\", __l); }} \
+                 __ok }}"
+            )
+        }
+        other => format!("/* builtin::{other} not supported as expression */"),
+    }
+}
+
 fn emit_atom(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)            => s.clone(),
@@ -339,6 +371,7 @@ fn emit_atom(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
         }
+        Atom::BuiltinExpr { name, args } => emit_builtin_expr(name, args, emit_expr),
         Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom(rhs)),
         Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
         Atom::Index { base, idx } =>

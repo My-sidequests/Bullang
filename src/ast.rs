@@ -194,6 +194,9 @@ pub enum Atom {
     Index { base: String, idx: Box<Expr> },
     /// String slice: `s[i..j]` → String
     Slice { base: String, from: Box<Expr>, to: Box<Expr> },
+    /// Inline builtin call usable as a pipe expression: `builtin::assert(cond)`
+    /// Distinct from BulletBody::Builtin (whole-function-body form).
+    BuiltinExpr { name: String, args: Vec<Expr> },
 }
 
 #[derive(Debug, Clone)]

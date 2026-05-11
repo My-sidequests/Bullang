@@ -335,6 +335,39 @@ fn emit_atom_go(atom: &Atom) -> String {
         Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
+        Atom::BuiltinExpr { name, args } => {
+            match name.as_str() {
+                "assert" => {
+                    let cond = emit_expr_go(&args[0]);
+                    format!(
+                        "func() bool {{ __r := ({cond}); \
+                         if !__r {{ fmt.Fprintf(os.Stderr, \"[assert] failed\\n\") }}; \
+                         return __r }}()"
+                    )
+                }
+                "assert_eq" => {
+                    let lhs = emit_expr_go(&args[0]);
+                    let rhs = emit_expr_go(&args[1]);
+                    format!(
+                        "func() bool {{ __l, __r := ({lhs}), ({rhs}); __ok := __l == __r; \
+                         if !__ok {{ fmt.Fprintf(os.Stderr, \
+                           \"[assert_eq] expected %v, got %v\\n\", __r, __l) }}; \
+                         return __ok }}()"
+                    )
+                }
+                "assert_ne" => {
+                    let lhs = emit_expr_go(&args[0]);
+                    let rhs = emit_expr_go(&args[1]);
+                    format!(
+                        "func() bool {{ __l, __r := ({lhs}), ({rhs}); __ok := __l != __r; \
+                         if !__ok {{ fmt.Fprintf(os.Stderr, \
+                           \"[assert_ne] expected values to differ, both were %v\\n\", __l) }}; \
+                         return __ok }}()"
+                    )
+                }
+                other => format!("false /* builtin::{other} not supported as expression */"),
+            }
+        }
         Atom::Interp(template) => {
             // Go uses fmt.Sprintf with %v for each interpolated variable.
             let (fmt_str, vars) = interp_to_sprintf(template);

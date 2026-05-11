@@ -163,9 +163,8 @@ fn run_rust_tests(root: &Path, tests: &[TestFn], tmp: &Path) {
 // ── C test runner ─────────────────────────────────────────────────────────────
 
 fn run_c_tests(tests: &[TestFn], tmp: &Path) {
-    // Emit a minimal test main.c that calls each #test function and checks its bool return.
     let mut src = String::new();
-    src.push_str("#include <stdio.h>\n#include <stdlib.h>\n\n");
+    src.push_str("#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
     for t in tests {
         src.push_str(&format!("extern int {}(void);\n", t.name));
     }
@@ -173,11 +172,9 @@ fn run_c_tests(tests: &[TestFn], tmp: &Path) {
     src.push_str("    int passed = 0, failed = 0;\n\n");
     for t in tests {
         src.push_str(&format!(
-            "    if ({name}()) {{ printf(\"  ok  {name}\\n\"); passed++; }}\n",
-            name = t.name
-        ));
-        src.push_str(&format!(
-            "    else           {{ printf(\"  FAIL {name}\\n\"); failed++; }}\n",
+            "    fprintf(stderr, \"\\n--- {name} ---\\n\");\n\
+             \    if ({name}()) {{ printf(\"  ok  {name}\\n\"); passed++; }}\n\
+             \    else           {{ printf(\"  FAIL {name}\\n\"); failed++; }}\n",
             name = t.name
         ));
     }
@@ -204,11 +201,9 @@ fn run_cpp_tests(tests: &[TestFn], tmp: &Path) {
     src.push_str("    int passed = 0, failed = 0;\n\n");
     for t in tests {
         src.push_str(&format!(
-            "    if ({name}()) {{ std::cout << \"  ok  {name}\" << std::endl; passed++; }}\n",
-            name = t.name
-        ));
-        src.push_str(&format!(
-            "    else           {{ std::cout << \"  FAIL {name}\" << std::endl; failed++; }}\n",
+            "    std::cerr << \"\\n--- {name} ---\\n\";\n\
+             \    if ({name}()) {{ std::cout << \"  ok  {name}\" << std::endl; passed++; }}\n\
+             \    else           {{ std::cout << \"  FAIL {name}\" << std::endl; failed++; }}\n",
             name = t.name
         ));
     }
@@ -257,9 +252,8 @@ fn run_python_tests(tests: &[TestFn], tmp: &Path) {
 // ── Go test runner ────────────────────────────────────────────────────────────
 
 fn run_go_tests(tests: &[TestFn], tmp: &Path) {
-    // Emit a *_test.go file using the testing package
     let mut src = String::new();
-    src.push_str("package main\n\nimport \"testing\"\n\n");
+    src.push_str("package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"testing\"\n)\n\n");
     for t in tests {
         let go_name: String = {
             let mut s = t.name.clone();
@@ -267,8 +261,14 @@ fn run_go_tests(tests: &[TestFn], tmp: &Path) {
             s
         };
         src.push_str(&format!(
-            "func Test{go_name}(t *testing.T) {{\n    if !{fn_name}() {{ t.Fail() }}\n}}\n\n",
-            go_name = go_name, fn_name = t.name
+            "func Test{go_name}(t *testing.T) {{\n\
+             \    fmt.Fprintln(os.Stderr, \"\\n--- {fn_name} ---\")\n\
+             \    if !{fn_name}() {{\n\
+             \        t.Errorf(\"{fn_name}: assertion failed — check stderr for details\")\n\
+             \    }}\n\
+             }}\n\n",
+            go_name = go_name,
+            fn_name = t.name,
         ));
     }
 
@@ -276,5 +276,5 @@ fn run_go_tests(tests: &[TestFn], tmp: &Path) {
     let _ = fs::write(&harness, &src);
     println!("test harness written to {}", harness.display());
     println!("place alongside your generated Go files and run:");
-    println!("  go test .");
+    println!("  go test -v .");
 }

@@ -215,6 +215,39 @@ fn emit_atom_py(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
         }
+        Atom::BuiltinExpr { name, args } => {
+            match name.as_str() {
+                "assert" => {
+                    let cond = emit_expr_py(&args[0]);
+                    format!(
+                        "(lambda __r: __r if __r else \
+                         [__import__('sys').stderr.write('[assert] failed\\n'), __r][-1])({})",
+                        cond
+                    )
+                }
+                "assert_eq" => {
+                    let lhs = emit_expr_py(&args[0]);
+                    let rhs = emit_expr_py(&args[1]);
+                    format!(
+                        "(lambda __l, __r: __l == __r if __l == __r else \
+                         [__import__('sys').stderr.write(\
+                           f'[assert_eq] expected {{__r!r}}, got {{__l!r}}\\n'\
+                         ), False][-1])({lhs}, {rhs})"
+                    )
+                }
+                "assert_ne" => {
+                    let lhs = emit_expr_py(&args[0]);
+                    let rhs = emit_expr_py(&args[1]);
+                    format!(
+                        "(lambda __l, __r: __l != __r if __l != __r else \
+                         [__import__('sys').stderr.write(\
+                           f'[assert_ne] expected values to differ, both were {{__l!r}}\\n'\
+                         ), False][-1])({lhs}, {rhs})"
+                    )
+                }
+                other => format!("None  # builtin::{other} not supported as expression"),
+            }
+        }
         Atom::Unary { op, rhs } => {
             // Python uses `not` for boolean negation; `-` is the same
             let py_op = if op == "!" { "not " } else { op.as_str() };

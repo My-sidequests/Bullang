@@ -425,6 +425,47 @@ fn infer_atom(
             current
         }
 
+        Atom::BuiltinExpr { name, args } => {
+            let bool_ty = BuType::Named("bool".to_string());
+            match name.as_str() {
+                "assert" => {
+                    if args.len() != 1 {
+                        errors.push(terr(path, span, format!(
+                            "Function '{}': builtin::assert expects 1 argument, got {}.",
+                            func_name, args.len()
+                        )));
+                        return BuType::Unknown;
+                    }
+                    let cond_ty = infer_expr(&args[0], local, env, struct_env, is_skirmish, func_name, path, span, errors);
+                    if cond_ty != BuType::Unknown && cond_ty != bool_ty {
+                        errors.push(terr(path, span, format!(
+                            "Function '{}': builtin::assert requires a bool argument, got {}.",
+                            func_name, cond_ty.to_rust()
+                        )));
+                    }
+                    bool_ty
+                }
+                "assert_eq" | "assert_ne" => {
+                    if args.len() != 2 {
+                        errors.push(terr(path, span, format!(
+                            "Function '{}': builtin::{} expects 2 arguments, got {}.",
+                            func_name, name, args.len()
+                        )));
+                        return BuType::Unknown;
+                    }
+                    bool_ty
+                }
+                other => {
+                    errors.push(terr(path, span, format!(
+                        "Function '{}': 'builtin::{}' is not available as a pipe expression. \
+                         Use it as a function body or check `bullang stdlib --list`.",
+                        func_name, other
+                    )));
+                    BuType::Unknown
+                }
+            }
+        }
+
         Atom::Index { base, .. } => {
             let base_ty = local.get(base).cloned().unwrap_or(BuType::Unknown);
             let string_ty = BuType::Named("String".to_string());
