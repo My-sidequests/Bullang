@@ -29,6 +29,17 @@ pub fn emit_struct_rs(s: &crate::ast::StructDef) -> String {
     out
 }
 
+pub fn emit_enum_rs(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str("#[derive(Debug, Clone, PartialEq, Eq)]\n");
+    out.push_str(&format!("pub enum {} {{\n", e.name));
+    for v in &e.variants {
+        out.push_str(&format!("    {},\n", v.name));
+    }
+    out.push_str("}\n");
+    out
+}
+
 // ── main.bu → main.rs ─────────────────────────────────────────────────────────
 
 /// Emits src/main.rs from the parsed main.bu.
@@ -90,12 +101,15 @@ pub fn emit_mod_rs(child_modules: &[String]) -> String {
     out
 }
 
-pub fn emit_lib_rs(child_modules: &[String], structs: &[crate::ast::StructDef]) -> String {
+pub fn emit_lib_rs(child_modules: &[String], structs: &[crate::ast::StructDef], enums: &[crate::ast::EnumDef]) -> String {
     let mut out = String::new();
     out.push_str("#![allow(unused_imports)]\n\n");
-    // Struct definitions from inventory — always at the top, visible to all modules
     for s in structs {
         out.push_str(&emit_struct_rs(s));
+        out.push('\n');
+    }
+    for e in enums {
+        out.push_str(&emit_enum_rs(e));
         out.push('\n');
     }
     for module in child_modules {
@@ -379,6 +393,7 @@ fn emit_atom(atom: &Atom) -> String {
         Atom::Slice { base, from, to } =>
             format!("{}.chars().skip({}).take(({}) - ({})).collect::<String>()",
                 base, emit_expr(from), emit_expr(to), emit_expr(from)),
+        Atom::EnumVariant { ty, variant } => format!("{}::{}", ty, variant),
     }
 }
 

@@ -40,16 +40,23 @@ pub fn emit_main_py(file: &SourceFile, _module_name: &str) -> String {
 
 // ── Module init file ──────────────────────────────────────────────────────────
 
-pub fn emit_init_py(child_modules: &[String], structs: &[crate::ast::StructDef]) -> String {
+pub fn emit_init_py(child_modules: &[String], structs: &[crate::ast::StructDef], enums: &[crate::ast::EnumDef]) -> String {
     let mut out = String::new();
     out.push_str("from __future__ import annotations\n");
     out.push_str("from typing import Any, Callable, Optional, List, Tuple, Dict\n");
     if !structs.is_empty() {
         out.push_str("from dataclasses import dataclass\n");
     }
+    if !enums.is_empty() {
+        out.push_str("from enum import Enum\n");
+    }
     out.push('\n');
     for s in structs {
         out.push_str(&emit_struct_py(s));
+        out.push('\n');
+    }
+    for e in enums {
+        out.push_str(&emit_enum_py(e));
         out.push('\n');
     }
     for module in child_modules {
@@ -69,6 +76,21 @@ pub fn emit_struct_py(s: &crate::ast::StructDef) -> String {
     } else {
         for field in &s.fields {
             out.push_str(&format!("    {}: {}\n", field.name, bu_type_to_python(&field.ty)));
+        }
+    }
+    out
+}
+
+// ── Enum emitter ──────────────────────────────────────────────────────────────
+
+pub fn emit_enum_py(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("class {}(Enum):\n", e.name));
+    if e.variants.is_empty() {
+        out.push_str("    pass\n");
+    } else {
+        for (i, v) in e.variants.iter().enumerate() {
+            out.push_str(&format!("    {} = {}\n", v.name, i));
         }
     }
     out
@@ -258,6 +280,7 @@ fn emit_atom_py(atom: &Atom) -> String {
             format!("{}[{}]", base, emit_expr_py(idx)),
         Atom::Slice { base, from, to } =>
             format!("{}[{}:{}]", base, emit_expr_py(from), emit_expr_py(to)),
+        Atom::EnumVariant { ty, variant } => format!("{}.{}", ty, variant),
     }
 }
 

@@ -43,53 +43,60 @@ pub fn typecheck_tree(root: &Path) -> Vec<TypeError> {
 pub fn typecheck_file(sf: &SourceFile, path: &str) -> Vec<TypeError> {
     let mut errors = Vec::new();
     let struct_env = StructEnv::new();
+    let enum_env   = EnumEnv::new();
     for func in &sf.bullets {
-        errors.extend(check_function(func, path, &TypeEnv::new(), &struct_env, true));
+        errors.extend(check_function(func, path, &TypeEnv::new(), &struct_env, &enum_env, true));
     }
     errors
 }
 
 // ── Folder-level type checking ────────────────────────────────────────────────
 
-fn check_folder(dir: &Path, errors: &mut Vec<TypeError>) -> (TypeEnv, StructEnv) {
+fn check_folder(dir: &Path, errors: &mut Vec<TypeError>) -> (TypeEnv, StructEnv, EnumEnv) {
     let inv = match read_inventory(dir) {
         Ok(i)  => i,
-        Err(_) => return (TypeEnv::new(), StructEnv::new()),
+        Err(_) => return (TypeEnv::new(), StructEnv::new(), EnumEnv::new()),
     };
 
     let mut env        = TypeEnv::new();
     let mut struct_env = StructEnv::new();
+    let mut enum_env   = EnumEnv::new();
 
-    // Register this folder's own struct definitions.
+    // Register this folder's own struct and enum definitions.
     for s in &inv.structs {
         struct_env.insert(s.name.clone(), s.clone());
+    }
+    for e in &inv.enums {
+        enum_env.insert(e.name.clone(), e.clone());
     }
 
     if inv.rank == Rank::War {
         for subdir in collect_subdirs(dir) {
-            let (sub_env, sub_struct_env) = check_folder(&subdir, errors);
+            let (sub_env, sub_struct_env, sub_enum_env) = check_folder(&subdir, errors);
             env.extend(sub_env);
             struct_env.extend(sub_struct_env);
+            enum_env.extend(sub_enum_env);
         }
-        return (env, struct_env);
+        return (env, struct_env, enum_env);
     }
 
     if inv.rank.has_sub_folders() {
         for subdir in collect_subdirs(dir) {
-            let (sub_env, sub_struct_env) = check_folder(&subdir, errors);
+            let (sub_env, sub_struct_env, sub_enum_env) = check_folder(&subdir, errors);
             env.extend(sub_env);
             struct_env.extend(sub_struct_env);
+            enum_env.extend(sub_enum_env);
         }
     }
 
     let is_skirmish = inv.rank == Rank::Skirmish;
     for entry in &inv.entries {
         let bu_path  = dir.join(format!("{}.bu", entry.file));
-        let file_env = check_source_file(&bu_path, &env, &struct_env, is_skirmish, errors);
+        let file_env = check_source_file(&bu_path, &env, &struct_env, &enum_env, is_skirmish, errors);
         env.extend(file_env);
     }
 
-    (env, struct_env)
+    (env, struct_env, enum_env)
 }
 
 // ── File-level type checking ──────────────────────────────────────────────────
@@ -98,6 +105,7 @@ fn check_source_file(
     path:        &Path,
     env:         &TypeEnv,
     struct_env:  &StructEnv,
+    enum_env:    &EnumEnv,
     is_skirmish: bool,
     errors:      &mut Vec<TypeError>,
 ) -> TypeEnv {
@@ -108,15 +116,18 @@ fn check_source_file(
         Err(_) => return file_env,
     };
 
-    let sf = match parser::parse_file(&source, false) {
+    let mut sf = match parser::parse_file(&source, false) {
         Ok(BuFile::Source(s)) => s,
         _                     => return file_env,
     };
 
+    // Lower FieldAccess nodes that refer to enum names before type-checking.
+    crate::ast::lower_enum_refs(&mut sf, enum_env);
+
     let path_str = path.display().to_string();
 
     for func in &sf.bullets {
-        errors.extend(check_function(func, &path_str, env, struct_env, is_skirmish));
+        errors.extend(check_function(func, &path_str, env, struct_env, enum_env, is_skirmish));
         file_env.insert(func.name.clone(), BulletSig {
             params:  func.params.iter().map(|p| p.ty.clone()).collect(),
             returns: func.output.ty.clone(),
@@ -133,6 +144,7 @@ fn check_function(
     path:        &str,
     env:         &TypeEnv,
     struct_env:  &StructEnv,
+    enum_env:    &EnumEnv,
     is_skirmish: bool,
 ) -> Vec<TypeError> {
     let bullets = match &func.body {
@@ -167,7 +179,7 @@ fn check_function(
         }
 
         let expr_type = infer_expr(
-            &bullet.expr, &local, env, struct_env, is_skirmish,
+            &bullet.expr, &local, env, struct_env, enum_env, is_skirmish,
             &func.name, path, bullet.span, &mut errors,
         );
 
@@ -220,6 +232,7 @@ fn infer_expr(
     local:       &HashMap<String, BuType>,
     env:         &TypeEnv,
     struct_env:  &StructEnv,
+    enum_env:    &EnumEnv,
     is_skirmish: bool,
     func_name:   &str,
     path:        &str,
@@ -227,11 +240,11 @@ fn infer_expr(
     errors:      &mut Vec<TypeError>,
 ) -> BuType {
     match expr {
-        Expr::Atom(a) => infer_atom(a, local, env, struct_env, is_skirmish, func_name, path, span, errors),
+        Expr::Atom(a) => infer_atom(a, local, env, struct_env, enum_env, is_skirmish, func_name, path, span, errors),
 
         Expr::BinOp(b) => {
-            let lhs_ty = infer_atom(&b.lhs, local, env, struct_env, is_skirmish, func_name, path, span, errors);
-            let rhs_ty = infer_atom(&b.rhs, local, env, struct_env, is_skirmish, func_name, path, span, errors);
+            let lhs_ty = infer_atom(&b.lhs, local, env, struct_env, enum_env, is_skirmish, func_name, path, span, errors);
+            let rhs_ty = infer_atom(&b.rhs, local, env, struct_env, enum_env, is_skirmish, func_name, path, span, errors);
 
             if lhs_ty == BuType::Unknown || rhs_ty == BuType::Unknown {
                 return BuType::Unknown;
@@ -284,7 +297,7 @@ fn infer_expr(
 
         Expr::Tuple(exprs) => {
             BuType::Tuple(exprs.iter().map(|e| {
-                infer_expr(e, local, env, struct_env, is_skirmish, func_name, path, span, errors)
+                infer_expr(e, local, env, struct_env, enum_env, is_skirmish, func_name, path, span, errors)
             }).collect())
         }
     }
@@ -295,6 +308,7 @@ fn infer_atom(
     local:       &HashMap<String, BuType>,
     env:         &TypeEnv,
     struct_env:  &StructEnv,
+    enum_env:    &EnumEnv,
     is_skirmish: bool,
     func_name:   &str,
     path:        &str,
@@ -355,7 +369,7 @@ fn infer_atom(
         }
 
         Atom::Unary { op, rhs } => {
-            let rhs_ty = infer_atom(rhs, local, env, struct_env, is_skirmish, func_name, path, span, errors);
+            let rhs_ty = infer_atom(rhs, local, env, struct_env, enum_env, is_skirmish, func_name, path, span, errors);
             let bool_ty    = BuType::Named("bool".to_string());
             match op.as_str() {
                 "!" => {
@@ -436,7 +450,7 @@ fn infer_atom(
                         )));
                         return BuType::Unknown;
                     }
-                    let cond_ty = infer_expr(&args[0], local, env, struct_env, is_skirmish, func_name, path, span, errors);
+                    let cond_ty = infer_expr(&args[0], local, env, struct_env, enum_env, is_skirmish, func_name, path, span, errors);
                     if cond_ty != BuType::Unknown && cond_ty != bool_ty {
                         errors.push(terr(path, span, format!(
                             "Function '{}': builtin::assert requires a bool argument, got {}.",
@@ -460,6 +474,29 @@ fn infer_atom(
                         "Function '{}': 'builtin::{}' is not available as a pipe expression. \
                          Use it as a function body or check `bullang stdlib --list`.",
                         func_name, other
+                    )));
+                    BuType::Unknown
+                }
+            }
+        }
+
+        Atom::EnumVariant { ty, variant } => {
+            match enum_env.get(ty) {
+                Some(def) => {
+                    if def.variants.iter().any(|v| &v.name == variant) {
+                        BuType::Named(ty.clone())
+                    } else {
+                        errors.push(terr(path, span, format!(
+                            "Function '{}': enum '{}' has no variant '{}'.",
+                            func_name, ty, variant
+                        )));
+                        BuType::Unknown
+                    }
+                }
+                None => {
+                    errors.push(terr(path, span, format!(
+                        "Function '{}': '{}' is not a known enum type.",
+                        func_name, ty
                     )));
                     BuType::Unknown
                 }

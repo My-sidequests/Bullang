@@ -185,6 +185,7 @@ fn format_atom(atom: &Atom) -> String {
             let args_str = args.iter().map(format_expr).collect::<Vec<_>>().join(", ");
             format!("builtin::{}({})", name, args_str)
         }
+        Atom::EnumVariant { ty, variant } => format!("{}.{}", ty, variant),
     }
 }
 

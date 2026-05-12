@@ -37,6 +37,16 @@ pub fn emit_struct_cpp(s: &crate::ast::StructDef) -> String {
     out
 }
 
+pub fn emit_enum_cpp(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("enum class {} {{\n", e.name));
+    for v in &e.variants {
+        out.push_str(&format!("    {},\n", v.name));
+    }
+    out.push_str("};\n");
+    out
+}
+
 // ── Header file ───────────────────────────────────────────────────────────────
 
 pub fn emit_header_cpp(
@@ -45,6 +55,7 @@ pub fn emit_header_cpp(
     namespace:    &str,
     includes:     &[String],
     structs:      &[crate::ast::StructDef],
+    enums:        &[crate::ast::EnumDef],
 ) -> String {
     let guard = format!("{}_HPP", module_name.to_uppercase().replace('-', "_"));
     let mut out = String::new();
@@ -68,7 +79,13 @@ pub fn emit_header_cpp(
 
     out.push_str(&format!("namespace {} {{\n\n", namespace));
 
-    // Inventory struct definitions first — visible to all function signatures
+    // Enum class definitions — scoped, no global-namespace pollution
+    for e in enums {
+        out.push_str(&emit_enum_cpp(e));
+        out.push('\n');
+    }
+
+    // Inventory struct definitions
     for s in structs {
         out.push_str(&emit_struct_cpp(s));
         out.push('\n');
@@ -164,13 +181,38 @@ fn emit_main_function_cpp(func: &Bullet) -> String {
     out
 }
 
+// ── Expression emitters ───────────────────────────────────────────────────────
+// C++ delegates most emission to the C backend, but patches EnumVariant:
+// C emits bare names (global typedef enum), C++ needs `Direction::North`
+// (scoped enum class).
+
+fn emit_expr_cpp(expr: &Expr) -> String {
+    match expr {
+        Expr::Atom(a)      => emit_atom_cpp(a),
+        Expr::BinOp(b)     => format!("{} {} {}",
+            emit_atom_cpp(&b.lhs), b.op, emit_atom_cpp(&b.rhs)),
+        Expr::Tuple(exprs) => format!(
+            "({})", exprs.iter().map(emit_expr_cpp).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+fn emit_atom_cpp(atom: &Atom) -> String {
+    match atom {
+        // C++ enum class: Direction::North (scoped)
+        Atom::EnumVariant { ty, variant } => format!("{}::{}", ty, variant),
+        // Everything else: delegate to C emitter
+        other => codegen_c::emit_atom_c(other),
+    }
+}
+
 fn emit_body_cpp(out: &mut String, body: &BulletBody, params: &[Param]) {
     match body {
         BulletBody::Pipes(pipes) => {
             if pipes.is_empty() { return; }
             let last = pipes.len().saturating_sub(1);
             for (i, pipe) in pipes.iter().enumerate() {
-                let expr_str = codegen_c::emit_expr_c(&pipe.expr);
+                let expr_str = emit_expr_cpp(&pipe.expr);
                 if i == last {
                     out.push_str(&format!("    return {};\n", expr_str));
                 } else {

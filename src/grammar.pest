@@ -104,6 +104,11 @@ struct_field  = { ident ~ ":" ~ ty }
 struct_fields = { struct_field ~ ("," ~ struct_field)* ~ ","? }
 struct_def    = { "struct" ~ ident ~ "{" ~ struct_fields ~ "}" }
 
+// ── Enum definitions (declared in inventory.bu, not in source files) ──────────
+enum_variant  = { ident }
+enum_variants = { enum_variant ~ ("," ~ enum_variant)* ~ ","? }
+enum_def      = { "enum" ~ ident ~ "{" ~ enum_variants ~ "}" }
+
 // ── Source file: only bullet declarations — no structs, no metadata ───────────
 source_file = { SOI ~ bullet* ~ EOI }
 
@@ -116,4 +121,4 @@ lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
 dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
 inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
 
-inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ struct_def* ~ inv_entry* ~ EOI }
+inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ (struct_def | enum_def)* ~ inv_entry* ~ EOI }

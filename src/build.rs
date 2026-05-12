@@ -33,17 +33,21 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
     let has_main = tree_has_main(root);
 
     let (child_modules, _) = emit_folder(
-        root, &src_out, backend, crate_name, has_main, &mut errors, &mut files_written,
+        root, &src_out, backend, crate_name, has_main, &enum_env, &mut errors, &mut files_written,
     );
 
-    // Collect all structs from all inventories in the tree
+    // Collect all structs and enums from all inventories in the tree
     let all_structs = collect_all_structs(root);
+    let all_enums   = collect_all_enums(root);
+    let enum_env: crate::ast::EnumEnv = all_enums.iter()
+        .map(|e| (e.name.clone(), e.clone()))
+        .collect();
 
     match backend {
         Backend::Rust => {
             write_file(
                 &src_out.join("lib.rs"),
-                &codegen::emit_lib_rs(&child_modules, &all_structs),
+                &codegen::emit_lib_rs(&child_modules, &all_structs, &all_enums),
                 &mut files_written,
             );
             let cargo = if has_main {
@@ -56,7 +60,7 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         Backend::Python => {
             write_file(
                 &src_out.join("__init__.py"),
-                &codegen::emit_init_py(&child_modules, &all_structs),
+                &codegen::emit_init_py(&child_modules, &all_structs, &all_enums),
                 &mut files_written,
             );
         }
@@ -66,7 +70,7 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
             let libs   = collect_all_libs(root);
-            let header = codegen::emit_header_c(crate_name, &src_refs, &libs, &all_structs);
+            let header = codegen::emit_header_c(crate_name, &src_refs, &libs, &all_structs, &all_enums);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
 
             let needs_ft = src_refs.iter().any(|(_, sf)| codegen::needs_foreign_types(sf));
@@ -90,7 +94,7 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
             let libs   = collect_all_libs(root);
-            let header = codegen::emit_header_cpp(crate_name, &src_refs, crate_name, &libs, &all_structs);
+            let header = codegen::emit_header_cpp(crate_name, &src_refs, crate_name, &libs, &all_structs, &all_enums);
             write_file(&out_dir.join(&header_name), &header, &mut files_written);
 
             let mut all_cpp: Vec<String> = child_modules.iter()
@@ -102,16 +106,16 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
         Backend::Go => {
             write_file(&out_dir.join("go.mod"), &codegen::emit_go_mod(crate_name), &mut files_written);
 
-            // types.go — inventory structs + Tuple foreign types
+            // types.go — inventory structs + enums + Tuple foreign types
             let all_sources = collect_all_sources(root);
             let src_refs: Vec<(String, &crate::ast::SourceFile)> =
                 all_sources.iter().map(|(n, sf)| (n.clone(), sf)).collect();
             let tuple_types = codegen::collect_tuple_types(&src_refs);
-            if !all_structs.is_empty() || !tuple_types.is_empty() {
+            if !all_structs.is_empty() || !all_enums.is_empty() || !tuple_types.is_empty() {
                 let pkg = if has_main { "main" } else { crate_name };
                 write_file(
                     &out_dir.join("types.go"),
-                    &codegen::emit_types_go(pkg, &all_structs, &tuple_types),
+                    &codegen::emit_types_go(pkg, &all_structs, &all_enums, &tuple_types),
                     &mut files_written,
                 );
             }
@@ -145,6 +149,7 @@ fn emit_folder(
     backend:    &Backend,
     crate_name: &str,
     has_main:   bool,
+    enum_env:   &crate::ast::EnumEnv,
     errors:     &mut Vec<ValidationError>,
     written:    &mut usize,
 ) -> (Vec<String>, Vec<String>) {
@@ -162,13 +167,13 @@ fn emit_folder(
             let name      = dir_name(&subdir);
             let child_out = out_dir.join(&name);
             fs::create_dir_all(&child_out).ok();
-            let (gc, fns) = emit_folder(&subdir, &child_out, backend, crate_name, has_main, errors, written);
+            let (gc, fns) = emit_folder(&subdir, &child_out, backend, crate_name, has_main, enum_env, errors, written);
             emit_mod_file(&child_out, &gc, backend, written);
             merge(&fns, &mut all_fns);
             child_modules.push(name);
         }
         if let Some(mp) = main_bu_path(src_dir) {
-            emit_main_file(&mp, out_dir, backend, crate_name, errors, written);
+            emit_main_file(&mp, out_dir, backend, crate_name, enum_env, errors, written);
         }
         return (child_modules, all_fns);
     }
@@ -177,7 +182,6 @@ fn emit_folder(
     if inv.rank.has_sub_folders() {
         for subdir in collect_subdirs(src_dir) {
             let name = dir_name(&subdir);
-            // C/C++: emit everything flat into the same output dir (no subdirectories)
             let child_out = match backend {
                 Backend::C | Backend::Cpp | Backend::Go => out_dir.to_path_buf(),
                 _ => {
@@ -186,12 +190,11 @@ fn emit_folder(
                     co
                 }
             };
-            let (gc, fns) = emit_folder(&subdir, &child_out, backend, crate_name, has_main, errors, written);
+            let (gc, fns) = emit_folder(&subdir, &child_out, backend, crate_name, has_main, enum_env, errors, written);
             if !matches!(backend, Backend::C | Backend::Cpp | Backend::Go) {
                 emit_mod_file(&child_out, &gc, backend, written);
                 child_modules.push(name);
             } else {
-                // For C/C++, propagate the module names up so Makefile lists them
                 child_modules.extend(gc);
             }
             merge(&fns, &mut all_fns);
@@ -206,11 +209,14 @@ fn emit_folder(
                 Ok(s)  => s,
                 Err(e) => { errors.push(io_err(&bu_path, e)); continue; }
             };
-            let sf = match parser::parse_file(&source, false) {
+            let mut sf = match parser::parse_file(&source, false) {
                 Ok(BuFile::Source(s))    => s,
                 Ok(BuFile::Inventory(_)) => continue,
                 Err(e) => { errors.push(parse_err(&bu_path, e)); continue; }
             };
+
+            // Lower FieldAccess → EnumVariant before codegen
+            crate::ast::lower_enum_refs(&mut sf, enum_env);
 
             merge(&entry.functions, &mut all_fns);
 
@@ -218,13 +224,12 @@ fn emit_folder(
             let out_path = out_dir.join(format!("{}.{}", entry.file, ext));
             let header_name = format!("{}.h", crate_name);
             let hpp_name    = format!("{}.hpp", crate_name);
-            // Go: if has_main, all files must be in "main" package
             let go_pkg = if has_main && matches!(backend, Backend::Go) {
                 "main".to_string()
             } else {
                 crate_name.to_string()
             };
-            let content  = match backend {
+            let content = match backend {
                 Backend::Rust        => codegen::emit_source(&sf),
                 Backend::Python      => codegen::emit_source_py(&sf),
                 Backend::C           => codegen::emit_source_c(&sf, &header_name),
@@ -240,7 +245,7 @@ fn emit_folder(
     // main.bu at non-skirmish levels
     if inv.rank != Rank::Skirmish {
         if let Some(mp) = main_bu_path(src_dir) {
-            emit_main_file(&mp, out_dir, backend, crate_name, errors, written);
+            emit_main_file(&mp, out_dir, backend, crate_name, enum_env, errors, written);
         }
     }
 
@@ -272,6 +277,7 @@ fn emit_main_file(
     out_dir:    &Path,
     backend:    &Backend,
     crate_name: &str,
+    enum_env:   &crate::ast::EnumEnv,
     errors:     &mut Vec<ValidationError>,
     written:    &mut usize,
 ) {
@@ -279,11 +285,14 @@ fn emit_main_file(
         Ok(s)  => s,
         Err(e) => { errors.push(io_err(main_path, e)); return; }
     };
-    let sf = match parser::parse_file(&source, false) {
+    let mut sf = match parser::parse_file(&source, false) {
         Ok(BuFile::Source(s)) => s,
         Ok(BuFile::Inventory(_)) => return,
         Err(e) => { errors.push(parse_err(main_path, e)); return; }
     };
+
+    // Lower FieldAccess → EnumVariant before codegen
+    crate::ast::lower_enum_refs(&mut sf, enum_env);
 
     let header_name = format!("{}.h", crate_name);
     let hpp_name    = format!("{}.hpp", crate_name);
@@ -427,7 +436,6 @@ fn collect_all_structs(dir: &Path) -> Vec<crate::ast::StructDef> {
     let inv = match read_inventory(dir) {
         Ok(i) => i, Err(_) => return result,
     };
-    // Deduplicate by name — a struct defined in a child propagates up
     for s in inv.structs {
         if !result.iter().any(|r: &crate::ast::StructDef| r.name == s.name) {
             result.push(s);
@@ -437,6 +445,26 @@ fn collect_all_structs(dir: &Path) -> Vec<crate::ast::StructDef> {
         for s in collect_all_structs(&subdir) {
             if !result.iter().any(|r: &crate::ast::StructDef| r.name == s.name) {
                 result.push(s);
+            }
+        }
+    }
+    result
+}
+
+fn collect_all_enums(dir: &Path) -> Vec<crate::ast::EnumDef> {
+    let mut result = Vec::new();
+    let inv = match read_inventory(dir) {
+        Ok(i) => i, Err(_) => return result,
+    };
+    for e in inv.enums {
+        if !result.iter().any(|r: &crate::ast::EnumDef| r.name == e.name) {
+            result.push(e);
+        }
+    }
+    for subdir in collect_subdirs(dir) {
+        for e in collect_all_enums(&subdir) {
+            if !result.iter().any(|r: &crate::ast::EnumDef| r.name == e.name) {
+                result.push(e);
             }
         }
     }

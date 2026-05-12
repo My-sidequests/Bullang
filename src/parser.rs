@@ -245,6 +245,18 @@ fn parse_struct_def(pair: Pair<Rule>) -> crate::ast::StructDef {
     crate::ast::StructDef { name, fields }
 }
 
+fn parse_enum_def(pair: Pair<Rule>) -> crate::ast::EnumDef {
+    let mut inner = pair.into_inner();
+    let name      = inner.next().unwrap().as_str().to_string();
+    // enum_variants contains enum_variant* children
+    let variants_pair = inner.next().unwrap();
+    let variants = variants_pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::enum_variant)
+        .map(|p| crate::ast::EnumVariant { name: p.as_str().to_string() })
+        .collect();
+    crate::ast::EnumDef { name, variants }
+}
+
 // ── Inventory file ────────────────────────────────────────────────────────────
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
@@ -252,6 +264,7 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     let mut lang    = None;
     let mut libs    = Vec::new();
     let mut structs = Vec::new();
+    let mut enums   = Vec::new();
     let mut entries = Vec::new();
 
     for inner in pair.into_inner() {
@@ -270,6 +283,9 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
             Rule::struct_def => {
                 structs.push(parse_struct_def(inner));
             }
+            Rule::enum_def => {
+                enums.push(parse_enum_def(inner));
+            }
             Rule::inv_entry => {
                 let mut ci    = inner.into_inner();
                 let file      = ci.next().unwrap().as_str().to_string();
@@ -286,6 +302,7 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
         lang,
         libs,
         structs,
+        enums,
         entries,
     }
 }

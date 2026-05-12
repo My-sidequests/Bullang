@@ -44,10 +44,16 @@ pub fn emit_source_go(file: &SourceFile, package: &str) -> String {
 /// Emit `types.go` — contains all inventory struct definitions and any
 /// Tuple named structs needed as foreign type equivalents.
 /// Called by build.rs whenever there are structs or Tuple types in the project.
-pub fn emit_types_go(package: &str, structs: &[crate::ast::StructDef], tuple_types: &[Vec<crate::ast::BuType>]) -> String {
+pub fn emit_types_go(package: &str, structs: &[crate::ast::StructDef], enums: &[crate::ast::EnumDef], tuple_types: &[Vec<crate::ast::BuType>]) -> String {
     let pkg = sanitize_go_pkg(package);
     let mut out = String::new();
     out.push_str(&format!("package {}\n\n", pkg));
+
+    // Enum types — iota const blocks
+    for e in enums {
+        out.push_str(&emit_enum_go(e));
+        out.push('\n');
+    }
 
     for s in structs {
         out.push_str(&emit_struct_go(s));
@@ -115,6 +121,21 @@ pub fn emit_struct_go(s: &crate::ast::StructDef) -> String {
             to_pascal_case(&field.name), bu_type_to_go(&field.ty)));
     }
     out.push_str("}\n");
+    out
+}
+
+pub fn emit_enum_go(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("type {} int\n\n", e.name));
+    out.push_str("const (\n");
+    for (i, v) in e.variants.iter().enumerate() {
+        if i == 0 {
+            out.push_str(&format!("\t{} {} = iota\n", v.name, e.name));
+        } else {
+            out.push_str(&format!("\t{}\n", v.name));
+        }
+    }
+    out.push_str(")\n");
     out
 }
 
@@ -394,6 +415,8 @@ fn emit_atom_go(atom: &Atom) -> String {
             format!("string([]rune({})[{}])", base, emit_expr_go(idx)),
         Atom::Slice { base, from, to } =>
             format!("string([]rune({})[{}:{}])", base, emit_expr_go(from), emit_expr_go(to)),
+        // Go enum constants are package-level — emit bare name
+        Atom::EnumVariant { variant, .. } => variant.clone(),
     }
 }
 /// `"Hello {name}!"` → `("Hello %v!", ["name"])`

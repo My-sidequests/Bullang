@@ -33,6 +33,16 @@ pub fn emit_struct_c(s: &crate::ast::StructDef) -> String {
     out
 }
 
+pub fn emit_enum_c(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str("typedef enum {\n");
+    for v in &e.variants {
+        out.push_str(&format!("    {},\n", v.name));
+    }
+    out.push_str(&format!("}} {};\n", e.name));
+    out
+}
+
 // ── foreign_types.h detection ─────────────────────────────────────────────────
 
 /// Returns true if the source file uses any type that requires foreign_types.h.
@@ -57,6 +67,7 @@ pub fn emit_header_c(
     source_files: &[(String, &SourceFile)],
     includes:     &[String],
     structs:      &[crate::ast::StructDef],
+    enums:        &[crate::ast::EnumDef],
 ) -> String {
     let guard    = format!("{}_H", module_name.to_uppercase().replace('-', "_"));
     let needs_ft = source_files.iter().any(|(_, sf)| needs_foreign_types(sf));
@@ -74,7 +85,13 @@ pub fn emit_header_c(
     }
     out.push('\n');
 
-    // Inventory struct typedefs — appear in header, usable across all .c files
+    // Enum typedefs — variants land in global scope (C enum semantics)
+    for e in enums {
+        out.push_str(&emit_enum_c(e));
+        out.push('\n');
+    }
+
+    // Inventory struct typedefs
     for s in structs {
         out.push_str(&emit_struct_c(s));
         out.push('\n');
@@ -308,6 +325,8 @@ pub fn emit_atom_c(atom: &Atom) -> String {
         Atom::Slice { base, from, to } =>
             format!("strndup(({}) + ({}), (size_t)(({})-({0})))",
                 base, emit_expr_c(from), emit_expr_c(to)),
+        // C typedef enum: variants are in global scope — emit bare variant name
+        Atom::EnumVariant { variant, .. } => variant.clone(),
     }
 }
 /// `"Hello {name}!"` → `("Hello %s!", ["name"])`
