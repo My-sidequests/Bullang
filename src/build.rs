@@ -32,16 +32,17 @@ pub fn build(root: &Path, out_dir: &Path, crate_name: &str, backend: &Backend) -
 
     let has_main = tree_has_main(root);
 
-    let (child_modules, _) = emit_folder(
-        root, &src_out, backend, crate_name, has_main, &enum_env, &mut errors, &mut files_written,
-    );
-
-    // Collect all structs and enums from all inventories in the tree
+    // Collect all structs and enums from all inventories in the tree.
+    // Must happen before emit_folder so lower_enum_refs has the full EnumEnv.
     let all_structs = collect_all_structs(root);
     let all_enums   = collect_all_enums(root);
     let enum_env: crate::ast::EnumEnv = all_enums.iter()
         .map(|e| (e.name.clone(), e.clone()))
         .collect();
+
+    let (child_modules, _) = emit_folder(
+        root, &src_out, backend, crate_name, has_main, &enum_env, &mut errors, &mut files_written,
+    );
 
     match backend {
         Backend::Rust => {
@@ -262,7 +263,7 @@ fn emit_mod_file(dir: &Path, child_modules: &[String], backend: &Backend, writte
         Backend::Python => {
             write_file(
                 &dir.join("__init__.py"),
-                &codegen::emit_init_py(child_modules, &[]),
+                &codegen::emit_init_py(child_modules, &[], &[]),
                 written,
             );
         }
