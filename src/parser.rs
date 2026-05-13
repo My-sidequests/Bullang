@@ -313,10 +313,21 @@ fn parse_bullet(pair: Pair<Rule>) -> Bullet {
     let bullet_span = span_of(&pair);
     let mut inner   = pair.into_inner();
     let name        = inner.next().unwrap().as_str().to_string();
-    let params      = parse_param_list(inner.next().unwrap());
-    let output      = parse_output_decl(inner.next().unwrap());
-    let body        = parse_bullet_body(inner.next().unwrap());
-    Bullet { name, params, output, body, span: bullet_span }
+
+    // Optional type_params: "[T]" or "[K, V]"
+    let type_params = match inner.peek().map(|p| p.as_rule()) {
+        Some(Rule::type_params) => {
+            inner.next().unwrap().into_inner()
+                .map(|p| p.as_str().to_string())
+                .collect()
+        }
+        _ => vec![],
+    };
+
+    let params = parse_param_list(inner.next().unwrap());
+    let output = parse_output_decl(inner.next().unwrap());
+    let body   = parse_bullet_body(inner.next().unwrap());
+    Bullet { name, type_params, params, output, body, span: bullet_span }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {

@@ -251,10 +251,39 @@ fn emit_function(func: &Bullet, backend: &Backend) -> String {
         .collect::<Vec<_>>().join(", ");
     let ret_ty = bu_type_to_rust(&func.output.ty);
 
-    out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
+    if func.type_params.is_empty() {
+        out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
+    } else {
+        // Infer bounds: PartialOrd if body uses comparison ops, Clone if it uses clone-requiring ops.
+        let bounds = rust_generic_bounds(func);
+        let type_str = func.type_params.iter()
+            .map(|t| format!("{}: {}", t, bounds))
+            .collect::<Vec<_>>().join(", ");
+        out.push_str(&format!("pub fn {}<{}>({}) -> {} {{\n", func.name, type_str, params, ret_ty));
+    }
+
     emit_body(&mut out, &func.body, &func.params, backend);
     out.push_str("}\n");
     out
+}
+
+/// Infer the minimal trait bound for a generic Rust function.
+/// Scans the pipe expressions for comparison ops → PartialOrd.
+/// Always adds Clone for safety (generic types may need it for binding).
+fn rust_generic_bounds(func: &Bullet) -> &'static str {
+    let has_cmp = if let BulletBody::Pipes(pipes) = &func.body {
+        pipes.iter().any(|p| expr_has_cmp(&p.expr))
+    } else {
+        false
+    };
+    if has_cmp { "PartialOrd + Clone" } else { "Clone" }
+}
+
+fn expr_has_cmp(expr: &Expr) -> bool {
+    match expr {
+        Expr::BinOp(b) => matches!(b.op.as_str(), "<" | ">" | "<=" | ">=" | "==" | "!="),
+        _ => false,
+    }
 }
 
 /// Emit the `main` function: no pub, no return type annotation.

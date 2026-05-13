@@ -128,6 +128,11 @@ fn py_param_name(name: &str) -> &str {
 fn emit_function_py(func: &Bullet) -> String {
     let mut out = String::new();
 
+    // Emit TypeVar declarations for each type param
+    for tp in &func.type_params {
+        out.push_str(&format!("{} = TypeVar('{}')\n", tp, tp));
+    }
+
     let params = func.params.iter()
         .map(|p| format!("{}: {}", py_param_name(&p.name), bu_type_to_python(&p.ty)))
         .collect::<Vec<_>>().join(", ");

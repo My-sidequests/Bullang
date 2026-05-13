@@ -102,9 +102,16 @@ fn format_bullet(func: &Bullet) -> String {
         .collect::<Vec<_>>()
         .join(", ");
 
+    let type_param_str = if func.type_params.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", func.type_params.join(", "))
+    };
+
     out.push_str(&format!(
-        "let {}({}) -> {}: {} {{\n",
+        "let {}{}({}) -> {}: {} {{\n",
         func.name,
+        type_param_str,
         params,
         func.output.name,
         format_type(&func.output.ty)

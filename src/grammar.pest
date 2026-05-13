@@ -97,7 +97,8 @@ output_decl = { "->" ~ ident ~ ":" ~ ty }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 // ── Bullet (function declaration) ────────────────────────────────────────────
-bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
+type_params = { "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+bullet      = { "let" ~ ident ~ type_params? ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 
 // ── Struct definitions (declared in inventory.bu, not in source files) ────────
 struct_field  = { ident ~ ":" ~ ty }

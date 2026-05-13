@@ -166,6 +166,14 @@ fn emit_function_cpp(func: &Bullet) -> String {
     let mut out   = String::new();
     let params    = cpp_param_list(&func.params);
     let ret       = bu_type_to_cpp(&func.output.ty);
+
+    if !func.type_params.is_empty() {
+        let tparams = func.type_params.iter()
+            .map(|t| format!("typename {}", t))
+            .collect::<Vec<_>>().join(", ");
+        out.push_str(&format!("template<{}>\n", tparams));
+    }
+
     out.push_str(&format!("{} {}({}) {{\n", ret, func.name, params));
     emit_body_cpp(&mut out, &func.body, &func.params);
     out.push_str("}\n");

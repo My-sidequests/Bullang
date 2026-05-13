@@ -297,11 +297,12 @@ pub struct EnumDef {
 /// A single function. All bullets are always public — there is no private code.
 #[derive(Debug, Clone)]
 pub struct Bullet {
-    pub name:   String,
-    pub params: Vec<Param>,
-    pub output: OutputDecl,
-    pub body:   BulletBody,
-    pub span:   Span,
+    pub name:        String,
+    pub type_params: Vec<String>,   // e.g. ["T"] for let max[T](...)
+    pub params:      Vec<Param>,
+    pub output:      OutputDecl,
+    pub body:        BulletBody,
+    pub span:        Span,
 }
 
 // ── Inventory entry ───────────────────────────────────────────────────────────

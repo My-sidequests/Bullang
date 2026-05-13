@@ -221,6 +221,10 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
                 }
             }
         }
+        // Generic functions using constraints.Ordered need the constraints package
+        if !func.type_params.is_empty() && go_needs_ordered(func) {
+            push_unique(&mut imports, "golang.org/x/exp/constraints");
+        }
     }
     imports.iter().map(|s| s.to_string()).collect()
 }
@@ -246,14 +250,39 @@ fn emit_function_go(func: &Bullet) -> String {
     let ret       = bu_type_to_go(&func.output.ty);
     let go_name   = to_pascal_case(&func.name);
 
-    if ret.is_empty() {
-        out.push_str(&format!("func {}({}) {{\n", go_name, params));
+    let type_param_str = if func.type_params.is_empty() {
+        String::new()
     } else {
-        out.push_str(&format!("func {}({}) {} {{\n", go_name, params, ret));
+        // Use constraints.Ordered if body uses comparison ops, any otherwise.
+        let constraint = if go_needs_ordered(func) { "constraints.Ordered" } else { "any" };
+        let tp = func.type_params.iter()
+            .map(|t| format!("{} {}", t, constraint))
+            .collect::<Vec<_>>().join(", ");
+        format!("[{}]", tp)
+    };
+
+    if ret.is_empty() {
+        out.push_str(&format!("func {}{}({}) {{\n", go_name, type_param_str, params));
+    } else {
+        out.push_str(&format!("func {}{}({}) {} {{\n", go_name, type_param_str, params, ret));
     }
     emit_body_go(&mut out, &func.body, &func.params, &func.output);
     out.push_str("}\n");
     out
+}
+
+/// Returns true if the function body contains any comparison operator,
+/// which requires the `constraints.Ordered` constraint in Go.
+fn go_needs_ordered(func: &Bullet) -> bool {
+    if let BulletBody::Pipes(pipes) = &func.body {
+        pipes.iter().any(|p| go_expr_has_cmp(&p.expr))
+    } else {
+        false
+    }
+}
+
+fn go_expr_has_cmp(expr: &Expr) -> bool {
+    matches!(expr, Expr::BinOp(b) if matches!(b.op.as_str(), "<" | ">" | "<=" | ">="))
 }
 
 fn emit_main_function_go(func: &Bullet) -> String {

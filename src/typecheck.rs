@@ -147,8 +147,14 @@ fn check_function(
     enum_env:    &EnumEnv,
     is_skirmish: bool,
 ) -> Vec<TypeError> {
+    // Generic functions cannot be type-checked without instantiation.
+    // Skip the pipe body — the declaration is still registered in TypeEnv.
+    if !func.type_params.is_empty() {
+        return vec![];
+    }
+
     let bullets = match &func.body {
-        BulletBody::Natives(_) => return vec![],
+        BulletBody::Natives(_)     => return vec![],
         BulletBody::Builtin(_)     => return vec![], // stdlib owns the type contract
         BulletBody::Pipes(p)       => p,
     };

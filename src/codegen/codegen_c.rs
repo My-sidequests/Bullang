@@ -170,9 +170,19 @@ pub fn emit_makefile(
 // ── Function emitters ─────────────────────────────────────────────────────────
 
 fn emit_function_c(func: &Bullet) -> String {
-    let mut out   = String::new();
-    let params    = c_param_list(&func.params);
-    let ret       = bu_type_to_c(&func.output.ty);
+    let mut out = String::new();
+
+    if !func.type_params.is_empty() {
+        // C has no generics. Emit a #warning and substitute void* for each type param.
+        out.push_str(&format!(
+            "#warning \"bullang: '{}' is generic — type params {:?} replaced with void*. \
+             Consider a native @c block.\"\n",
+            func.name, func.type_params
+        ));
+    }
+
+    let params = c_param_list(&func.params);
+    let ret    = bu_type_to_c(&func.output.ty);
     out.push_str(&format!("{} {}({}) {{\n", ret, func.name, params));
     emit_body_c(&mut out, &func.body, &func.params, &Backend::C);
     out.push_str("}\n");
@@ -423,6 +433,10 @@ fn translate_c_generic(s: &str) -> String {
     // Fn[...] → function pointer
     if s.starts_with("Fn[") {
         return "void*  /* fn ptr */".to_string();
+    }
+    // Bare type parameter (e.g. T, K, V, E) — no known C equivalent
+    if s.chars().all(|c| c.is_alphabetic()) && s.len() <= 2 {
+        return "void*  /* generic type param */".to_string();
     }
     // Unknown: pass through
     format!("{}  /* ? */", s)
