@@ -21,10 +21,12 @@ mod close;
 mod ends_with;
 mod env;
 mod exit;
+mod exp;
 mod fd_in;
 mod fd_out;
 mod insertion_sort;
 mod len;
+mod log;
 mod max;
 mod merge_sort;
 mod min;
@@ -39,6 +41,7 @@ mod sleep;
 mod sqrt;
 mod starts_with;
 mod swap;
+mod tern;
 mod time;
 mod to_lower;
 mod to_string;
@@ -47,7 +50,7 @@ mod trim;
 
 // ── Universal builtin set ─────────────────────────────────────────────────────
 
-/// The 31 universal builtins — available in every backend.
+/// The 34 universal builtins — available in every backend.
 pub const BUILTINS: &[(&str, &str, &str)] = &[
     // math
     abs::META,
@@ -57,6 +60,10 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     clamp::META,
     min::META,
     max::META,
+    log::META,
+    exp::META,
+    // conditions
+    tern::META,
     // string
     to_upper::META,
     to_lower::META,
@@ -114,6 +121,9 @@ pub fn emit_builtin(name: &str, params: &[Param], backend: &Backend) -> Result<S
         "clamp"          => clamp::emit(params, backend),
         "min"            => min::emit(params, backend),
         "max"            => max::emit(params, backend),
+        "log"            => log::emit(params, backend),
+        "exp"            => exp::emit(params, backend),
+        "tern"           => tern::emit(params, backend),
         "to_upper"       => to_upper::emit(params, backend),
         "to_lower"       => to_lower::emit(params, backend),
         "trim"           => trim::emit(params, backend),
