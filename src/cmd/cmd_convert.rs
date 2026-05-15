@@ -284,24 +284,6 @@ fn write_file_or_exit(path: &std::path::Path, content: String) {
     });
 }
 
-/// Split a combined C/C++ codegen output (header + source concatenated) into
-/// two separate strings.  The codegen emits the header block first, separated
-/// from the source block by a blank line.  If no clear split is found the
-/// whole content goes into the source file.
-fn split_c_output(content: &str, hdr_name: &str) -> (String, String) {
-    // The generated output starts with the header guard / #pragma once block.
-    // Look for the first occurrence of `#include "hdr_name"` which marks the
-    // beginning of the .c / .cpp section.
-    let marker = format!("#include \"{}\"", hdr_name);
-    if let Some(pos) = content.find(&marker) {
-        let hdr = content[..pos].trim_end().to_string() + "\n";
-        let src = content[pos..].to_string();
-        (hdr, src)
-    } else {
-        (String::new(), content.to_string())
-    }
-}
-
 // ── Multi-language helpers ────────────────────────────────────────────────────
 
 /// Walk the tree and collect (folder_path → Option<Backend>) for every folder
