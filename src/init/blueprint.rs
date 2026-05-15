@@ -119,7 +119,6 @@ Rules:
 | `Vec[T]`        | `Vec<T>`       | `list`          | `[]T`           | `vec_t` (1)     | `std::vector<T>`          |
 | `HashMap[K, V]` | `HashMap<K,V>` | `dict`          | `map[K]V`       | `map_t` (1)     | `std::unordered_map<K,V>` |
 | `Option[T]`     | `Option<T>`    | `Optional[T]`   | `*T`            | `T*`            | `std::optional<T>`        |
-| `Result[T, E]`  | `Result<T,E>`  | n/a             | n/a             | n/a             | n/a                       |
 | `Tuple[T, U]`   | `(T, U)`       | `tuple`         | `Tuple_T_U` (2) | N/A             | `std::tuple<T, U>`        |
 | `UserStruct`    | `pub struct`   | `@dataclass`    | `struct`        | `typedef struct`| `struct`                  |
 
@@ -161,7 +160,7 @@ Supported operators: `+` `-` `*` `/` `%` `==` `!=` `<` `>` `<=` `>=`
 ## Error propagation (?)
 
 Add `?` after a bullet's binding to propagate `None` or `Err` early. Only
-valid when the function's output type is `Option[T]` or `Result[T, E]`.
+valid when the function's output type is `Option[T]`.
 Cannot appear on the last bullet.
 
 ```

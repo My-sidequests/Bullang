@@ -172,7 +172,7 @@ fn check_function(
         if bullet.propagate && !output_is_propagatable {
             errors.push(terr(path, bullet.span, format!(
                 "Function '{}': `?` can only be used when the function returns \
-                 Option[T] or Result[T, E] (declared return type is {}).",
+                 Option[T] (declared return type is {}).",
                 func.name, func.output.ty.to_rust()
             )));
         }
@@ -211,7 +211,7 @@ fn check_function(
 
 fn is_propagatable_type(ty: &BuType) -> bool {
     if let BuType::Named(s) = ty {
-        s.starts_with("Option[") || s.starts_with("Result[")
+        s.starts_with("Option[")
     } else {
         false
     }
@@ -221,11 +221,6 @@ fn unwrap_inner_type(ty: &BuType) -> BuType {
     if let BuType::Named(s) = ty {
         if s.starts_with("Option[") && s.ends_with(']') {
             return BuType::Named(s[7..s.len()-1].trim().to_string());
-        }
-        if s.starts_with("Result[") && s.ends_with(']') {
-            let inner = &s[7..s.len()-1];
-            let t = inner.split(',').next().unwrap_or(inner).trim();
-            return BuType::Named(t.to_string());
         }
     }
     BuType::Unknown

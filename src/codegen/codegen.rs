@@ -154,16 +154,6 @@ fn translate_named_to_rust(s: &str) -> String {
         let inner = &s[7..s.len()-1];
         return format!("Option<{}>", translate_named_to_rust(inner));
     }
-    // Result[T, E] → Result<T, E>
-    if s.starts_with("Result[") && s.ends_with(']') {
-        let inner = &s[7..s.len()-1];
-        // split on first comma not inside brackets
-        let parts = split_top_level(inner, ',');
-        let translated: Vec<String> = parts.iter()
-            .map(|p| translate_named_to_rust(p.trim()))
-            .collect();
-        return format!("Result<{}>", translated.join(", "));
-    }
     // Tuple[T, U] → (T, U)
     if s.starts_with("Tuple[") && s.ends_with(']') {
         let inner = &s[6..s.len()-1];

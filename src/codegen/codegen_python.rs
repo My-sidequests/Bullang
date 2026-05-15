@@ -338,11 +338,6 @@ fn translate_generic_type(s: &str) -> String {
         let inner = &s[7..s.len()-1];
         return format!("Optional[{}]", rust_type_to_python(inner));
     }
-    if s.starts_with("Result<") && s.ends_with('>') {
-        // Simplified: just use the Ok type
-        let inner = s[7..s.len()-1].split(',').next().unwrap_or("Any");
-        return format!("Optional[{}]  # Result type", rust_type_to_python(inner.trim()));
-    }
     if s.starts_with("Fn[") {
         // fn(T) -> U → Callable[[T], U]
         return translate_fn_type(s);
