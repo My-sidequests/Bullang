@@ -25,6 +25,65 @@ pub fn emit_source_cpp(file: &SourceFile, header_name: &str) -> String {
     out
 }
 
+/// Single-file mode: emit a self-contained `.cpp` with no companion `.hpp`.
+pub fn emit_source_cpp_standalone(file: &SourceFile) -> String {
+    let mut out = String::new();
+    out.push_str("#include <cstdint>\n");
+    out.push_str("#include <string>\n");
+    if needs_stdbool_cpp(file) {
+        out.push_str("#include <stdbool.h>\n");
+    }
+    if needs_vector_cpp(file) {
+        out.push_str("#include <vector>\n");
+    }
+    if needs_map_cpp(file) {
+        out.push_str("#include <unordered_map>\n");
+    }
+    if needs_optional_cpp(file) {
+        out.push_str("#include <optional>\n");
+    }
+    if needs_tuple_cpp(file) {
+        out.push_str("#include <tuple>\n");
+    }
+    out.push('\n');
+
+    for func in &file.bullets {
+        out.push_str(&emit_function_cpp(func));
+        out.push('\n');
+    }
+    out
+}
+
+// ── Detection helpers for standalone mode ─────────────────────────────────────
+
+fn type_contains<F: Fn(&str) -> bool>(ty: &BuType, pred: &F) -> bool {
+    match ty {
+        BuType::Named(s)    => pred(s),
+        BuType::Array(t, _) => type_contains(t, pred),
+        BuType::Tuple(ts)   => ts.iter().any(|t| type_contains(t, pred)),
+        BuType::Unknown     => false,
+    }
+}
+
+fn file_any_type<F: Fn(&str) -> bool>(file: &SourceFile, pred: F) -> bool {
+    file.bullets.iter().any(|b| {
+        type_contains(&b.output.ty, &pred)
+            || b.params.iter().any(|p| type_contains(&p.ty, &pred))
+    })
+}
+
+fn needs_stdbool_cpp(file: &SourceFile) -> bool { file_any_type(file, |s| s == "bool") }
+fn needs_vector_cpp(file: &SourceFile)   -> bool { file_any_type(file, |s| s.starts_with("Vec[")) }
+fn needs_map_cpp(file: &SourceFile)      -> bool { file_any_type(file, |s| s.starts_with("HashMap[")) }
+fn needs_optional_cpp(file: &SourceFile) -> bool { file_any_type(file, |s| s.starts_with("Option[")) }
+
+fn needs_tuple_cpp(file: &SourceFile) -> bool {
+    file.bullets.iter().any(|b| {
+        matches!(b.output.ty, BuType::Tuple(_))
+            || b.params.iter().any(|p| matches!(p.ty, BuType::Tuple(_)))
+    })
+}
+
 // ── Struct emitter ────────────────────────────────────────────────────────────
 
 pub fn emit_struct_cpp(s: &crate::ast::StructDef) -> String {
@@ -32,6 +91,16 @@ pub fn emit_struct_cpp(s: &crate::ast::StructDef) -> String {
     out.push_str(&format!("struct {} {{\n", s.name));
     for field in &s.fields {
         out.push_str(&format!("    {} {};\n", bu_type_to_cpp(&field.ty), field.name));
+    }
+    out.push_str("};\n");
+    out
+}
+
+pub fn emit_enum_cpp(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("enum class {} {{\n", e.name));
+    for v in &e.variants {
+        out.push_str(&format!("    {},\n", v.name));
     }
     out.push_str("};\n");
     out
@@ -45,6 +114,7 @@ pub fn emit_header_cpp(
     namespace:    &str,
     includes:     &[String],
     structs:      &[crate::ast::StructDef],
+    enums:        &[crate::ast::EnumDef],
 ) -> String {
     let guard = format!("{}_HPP", module_name.to_uppercase().replace('-', "_"));
     let mut out = String::new();
@@ -68,7 +138,13 @@ pub fn emit_header_cpp(
 
     out.push_str(&format!("namespace {} {{\n\n", namespace));
 
-    // Inventory struct definitions first — visible to all function signatures
+    // Enum class definitions — scoped, no global-namespace pollution
+    for e in enums {
+        out.push_str(&emit_enum_cpp(e));
+        out.push('\n');
+    }
+
+    // Inventory struct definitions
     for s in structs {
         out.push_str(&emit_struct_cpp(s));
         out.push('\n');
@@ -149,6 +225,14 @@ fn emit_function_cpp(func: &Bullet) -> String {
     let mut out   = String::new();
     let params    = cpp_param_list(&func.params);
     let ret       = bu_type_to_cpp(&func.output.ty);
+
+    if !func.type_params.is_empty() {
+        let tparams = func.type_params.iter()
+            .map(|t| format!("typename {}", t))
+            .collect::<Vec<_>>().join(", ");
+        out.push_str(&format!("template<{}>\n", tparams));
+    }
+
     out.push_str(&format!("{} {}({}) {{\n", ret, func.name, params));
     emit_body_cpp(&mut out, &func.body, &func.params);
     out.push_str("}\n");
@@ -164,13 +248,47 @@ fn emit_main_function_cpp(func: &Bullet) -> String {
     out
 }
 
+// ── Expression emitters ───────────────────────────────────────────────────────
+// C++ delegates most emission to the C backend, but patches EnumVariant:
+// C emits bare names (global typedef enum), C++ needs `Direction::North`
+// (scoped enum class).
+
+fn emit_expr_cpp(expr: &Expr) -> String {
+    match expr {
+        Expr::Atom(a)      => emit_atom_cpp(a),
+        Expr::BinOp(b)     => format!("{} {} {}",
+            emit_atom_cpp(&b.lhs), b.op, emit_atom_cpp(&b.rhs)),
+        Expr::Tuple(exprs) => format!(
+            "({})", exprs.iter().map(emit_expr_cpp).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+fn emit_atom_cpp(atom: &Atom) -> String {
+    match atom {
+        // C++ enum class: Direction::North (scoped)
+        Atom::EnumVariant { ty, variant } => format!("{}::{}", ty, variant),
+        // C++ closure: immediately-returned lambda
+        Atom::Closure { params, ret, body } => {
+            let ps = params.iter()
+                .map(|p| format!("{} {}", bu_type_to_cpp(&p.ty), p.name))
+                .collect::<Vec<_>>().join(", ");
+            let ret_str  = bu_type_to_cpp(ret);
+            let body_str = emit_expr_cpp(body);
+            format!("[&]({}) -> {} {{ return {}; }}", ps, ret_str, body_str)
+        }
+        // Everything else: delegate to C emitter
+        other => codegen_c::emit_atom_c(other),
+    }
+}
+
 fn emit_body_cpp(out: &mut String, body: &BulletBody, params: &[Param]) {
     match body {
         BulletBody::Pipes(pipes) => {
             if pipes.is_empty() { return; }
             let last = pipes.len().saturating_sub(1);
             for (i, pipe) in pipes.iter().enumerate() {
-                let expr_str = codegen_c::emit_expr_c(&pipe.expr);
+                let expr_str = emit_expr_cpp(&pipe.expr);
                 if i == last {
                     out.push_str(&format!("    return {};\n", expr_str));
                 } else {

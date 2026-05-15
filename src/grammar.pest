@@ -38,13 +38,33 @@ string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 // ── Call arguments ────────────────────────────────────────────────────────────
 bullet_ref = { "&" ~ ident }
-call_arg   = { bullet_ref | float | integer | string_lit | ident }
+call_arg   = { bullet_ref | closure | float | integer | string_lit | slice_expr | index_expr | field_access | ident }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
-op         = { "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
-call       = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
-atom       = { call | float | integer | string_lit | ident }
-expr       = { atom ~ (op ~ atom)* }
+op           = { "&&" | "||" | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
+unary_op     = { "!" | "-" }
+unary_expr   = { unary_op ~ atom }
+field_access = { ident ~ ("." ~ ident)+ }
+// slice_expr must precede index_expr: both open with ident ~ "[" ~ expr,
+// slice disambiguates with ".." after the first expression.
+// ".." is not in `op` so `expr` stops before it — no ambiguity.
+slice_expr   = { ident ~ "[" ~ expr ~ ".." ~ expr ~ "]" }
+index_expr   = { ident ~ "[" ~ expr ~ "]" }
+// builtin_expr: inline builtin call usable as a pipe expression.
+// Distinct from `builtin_call` (whole function body, no argument list).
+// Must be tried before `call` because "builtin" is a valid ident.
+builtin_expr = { "builtin" ~ "::" ~ ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+closure_param = { ident ~ ":" ~ ty }
+closure       = { "|" ~ (closure_param ~ ("," ~ closure_param)*)? ~ "|" ~ "->" ~ ty ~ "{" ~ expr ~ "}" }
+call         = { ident ~ "(" ~ call_arg ~ ("," ~ call_arg)* ~ ")" }
+// Order: builtin_expr before call (both start with ident ~ "(", but
+//        builtin_expr has "::" in between so they don't actually conflict;
+//        listed first for readability and safety).
+// slice before index (same prefix, slice needs ".." lookahead).
+// field_access before ident ("foo.bar" must not match as just "foo").
+// unary_expr last ("-5" matches integer's built-in "-"? prefix first).
+atom         = { builtin_expr | closure | call | float | integer | string_lit | slice_expr | index_expr | field_access | ident | unary_expr }
+expr         = { atom ~ (op ~ atom)* }
 tuple_expr = { "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 pipe_val   = { tuple_expr | expr }
 
@@ -79,12 +99,18 @@ output_decl = { "->" ~ ident ~ ":" ~ ty }
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 // ── Bullet (function declaration) ────────────────────────────────────────────
-bullet = { "let" ~ ident ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
+type_params = { "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+bullet      = { "let" ~ ident ~ type_params? ~ param_list ~ output_decl ~ "{" ~ bullet_body ~ "}" }
 
 // ── Struct definitions (declared in inventory.bu, not in source files) ────────
 struct_field  = { ident ~ ":" ~ ty }
 struct_fields = { struct_field ~ ("," ~ struct_field)* ~ ","? }
 struct_def    = { "struct" ~ ident ~ "{" ~ struct_fields ~ "}" }
+
+// ── Enum definitions (declared in inventory.bu, not in source files) ──────────
+enum_variant  = { ident }
+enum_variants = { enum_variant ~ ("," ~ enum_variant)* ~ ","? }
+enum_def      = { "enum" ~ ident ~ "{" ~ enum_variants ~ "}" }
 
 // ── Source file: only bullet declarations — no structs, no metadata ───────────
 source_file = { SOI ~ bullet* ~ EOI }
@@ -98,4 +124,4 @@ lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
 dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
 inv_entry      = { ident ~ ":" ~ ident ~ ("," ~ ident)* ~ ";" }
 
-inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ struct_def* ~ inv_entry* ~ EOI }
+inventory_file = { SOI ~ dir_rank ~ dir_lang? ~ dir_lib* ~ (struct_def | enum_def)* ~ inv_entry* ~ EOI }

@@ -102,9 +102,16 @@ fn format_bullet(func: &Bullet) -> String {
         .collect::<Vec<_>>()
         .join(", ");
 
+    let type_param_str = if func.type_params.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", func.type_params.join(", "))
+    };
+
     out.push_str(&format!(
-        "let {}({}) -> {}: {} {{\n",
+        "let {}{}({}) -> {}: {} {{\n",
         func.name,
+        type_param_str,
         params,
         func.output.name,
         format_type(&func.output.ty)
@@ -174,6 +181,23 @@ fn format_atom(atom: &Atom) -> String {
                 CallArg::BulletRef(s) => format!("&{}", s),
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
+        }
+        Atom::Unary { op, rhs } => format!("({}{})", op, format_atom(rhs)),
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}[{}]", base, format_expr(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("{}[{}..{}]", base, format_expr(from), format_expr(to)),
+        Atom::BuiltinExpr { name, args } => {
+            let args_str = args.iter().map(format_expr).collect::<Vec<_>>().join(", ");
+            format!("builtin::{}({})", name, args_str)
+        }
+        Atom::EnumVariant { ty, variant } => format!("{}.{}", ty, variant),
+        Atom::Closure { params, ret, body } => {
+            let ps = params.iter()
+                .map(|p| format!("{}: {}", p.name, format_type(&p.ty)))
+                .collect::<Vec<_>>().join(", ");
+            format!("|{}| -> {} {{ {} }}", ps, format_type(ret), format_expr(body))
         }
     }
 }

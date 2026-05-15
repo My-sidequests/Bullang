@@ -44,10 +44,16 @@ pub fn emit_source_go(file: &SourceFile, package: &str) -> String {
 /// Emit `types.go` — contains all inventory struct definitions and any
 /// Tuple named structs needed as foreign type equivalents.
 /// Called by build.rs whenever there are structs or Tuple types in the project.
-pub fn emit_types_go(package: &str, structs: &[crate::ast::StructDef], tuple_types: &[Vec<crate::ast::BuType>]) -> String {
+pub fn emit_types_go(package: &str, structs: &[crate::ast::StructDef], enums: &[crate::ast::EnumDef], tuple_types: &[Vec<crate::ast::BuType>]) -> String {
     let pkg = sanitize_go_pkg(package);
     let mut out = String::new();
     out.push_str(&format!("package {}\n\n", pkg));
+
+    // Enum types — iota const blocks
+    for e in enums {
+        out.push_str(&emit_enum_go(e));
+        out.push('\n');
+    }
 
     for s in structs {
         out.push_str(&emit_struct_go(s));
@@ -115,6 +121,21 @@ pub fn emit_struct_go(s: &crate::ast::StructDef) -> String {
             to_pascal_case(&field.name), bu_type_to_go(&field.ty)));
     }
     out.push_str("}\n");
+    out
+}
+
+pub fn emit_enum_go(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("type {} int\n\n", e.name));
+    out.push_str("const (\n");
+    for (i, v) in e.variants.iter().enumerate() {
+        if i == 0 {
+            out.push_str(&format!("\t{} {} = iota\n", v.name, e.name));
+        } else {
+            out.push_str(&format!("\t{}\n", v.name));
+        }
+    }
+    out.push_str(")\n");
     out
 }
 
@@ -200,6 +221,10 @@ fn needed_imports(file: &SourceFile) -> Vec<String> {
                 }
             }
         }
+        // Generic functions using constraints.Ordered need the constraints package
+        if !func.type_params.is_empty() && go_needs_ordered(func) {
+            push_unique(&mut imports, "golang.org/x/exp/constraints");
+        }
     }
     imports.iter().map(|s| s.to_string()).collect()
 }
@@ -225,14 +250,39 @@ fn emit_function_go(func: &Bullet) -> String {
     let ret       = bu_type_to_go(&func.output.ty);
     let go_name   = to_pascal_case(&func.name);
 
-    if ret.is_empty() {
-        out.push_str(&format!("func {}({}) {{\n", go_name, params));
+    let type_param_str = if func.type_params.is_empty() {
+        String::new()
     } else {
-        out.push_str(&format!("func {}({}) {} {{\n", go_name, params, ret));
+        // Use constraints.Ordered if body uses comparison ops, any otherwise.
+        let constraint = if go_needs_ordered(func) { "constraints.Ordered" } else { "any" };
+        let tp = func.type_params.iter()
+            .map(|t| format!("{} {}", t, constraint))
+            .collect::<Vec<_>>().join(", ");
+        format!("[{}]", tp)
+    };
+
+    if ret.is_empty() {
+        out.push_str(&format!("func {}{}({}) {{\n", go_name, type_param_str, params));
+    } else {
+        out.push_str(&format!("func {}{}({}) {} {{\n", go_name, type_param_str, params, ret));
     }
     emit_body_go(&mut out, &func.body, &func.params, &func.output);
     out.push_str("}\n");
     out
+}
+
+/// Returns true if the function body contains any comparison operator,
+/// which requires the `constraints.Ordered` constraint in Go.
+fn go_needs_ordered(func: &Bullet) -> bool {
+    if let BulletBody::Pipes(pipes) = &func.body {
+        pipes.iter().any(|p| go_expr_has_cmp(&p.expr))
+    } else {
+        false
+    }
+}
+
+fn go_expr_has_cmp(expr: &Expr) -> bool {
+    matches!(expr, Expr::BinOp(b) if matches!(b.op.as_str(), "<" | ">" | "<=" | ">="))
 }
 
 fn emit_main_function_go(func: &Bullet) -> String {
@@ -335,6 +385,39 @@ fn emit_atom_go(atom: &Atom) -> String {
         Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
+        Atom::BuiltinExpr { name, args } => {
+            match name.as_str() {
+                "assert" => {
+                    let cond = emit_expr_go(&args[0]);
+                    format!(
+                        "func() bool {{ __r := ({cond}); \
+                         if !__r {{ fmt.Fprintf(os.Stderr, \"[assert] failed\\n\") }}; \
+                         return __r }}()"
+                    )
+                }
+                "assert_eq" => {
+                    let lhs = emit_expr_go(&args[0]);
+                    let rhs = emit_expr_go(&args[1]);
+                    format!(
+                        "func() bool {{ __l, __r := ({lhs}), ({rhs}); __ok := __l == __r; \
+                         if !__ok {{ fmt.Fprintf(os.Stderr, \
+                           \"[assert_eq] expected %v, got %v\\n\", __r, __l) }}; \
+                         return __ok }}()"
+                    )
+                }
+                "assert_ne" => {
+                    let lhs = emit_expr_go(&args[0]);
+                    let rhs = emit_expr_go(&args[1]);
+                    format!(
+                        "func() bool {{ __l, __r := ({lhs}), ({rhs}); __ok := __l != __r; \
+                         if !__ok {{ fmt.Fprintf(os.Stderr, \
+                           \"[assert_ne] expected values to differ, both were %v\\n\", __l) }}; \
+                         return __ok }}()"
+                    )
+                }
+                other => format!("false /* builtin::{other} not supported as expression */"),
+            }
+        }
         Atom::Interp(template) => {
             // Go uses fmt.Sprintf with %v for each interpolated variable.
             let (fmt_str, vars) = interp_to_sprintf(template);
@@ -352,10 +435,27 @@ fn emit_atom_go(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", go_name, args_str)
         }
+        Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom_go(rhs)),
+        Atom::FieldAccess { base, fields } => {
+            let pascal_fields: Vec<String> = fields.iter().map(|f| to_pascal_case(f)).collect();
+            format!("{}.{}", base, pascal_fields.join("."))
+        }
+        Atom::Index { base, idx } =>
+            format!("string([]rune({})[{}])", base, emit_expr_go(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("string([]rune({})[{}:{}])", base, emit_expr_go(from), emit_expr_go(to)),
+        // Go enum constants are package-level — emit bare name
+        Atom::EnumVariant { variant, .. } => variant.clone(),
+        Atom::Closure { params, ret, body } => {
+            let ps = params.iter()
+                .map(|p| format!("{} {}", p.name, bu_type_to_go(&p.ty)))
+                .collect::<Vec<_>>().join(", ");
+            let ret_str  = bu_type_to_go(ret);
+            let body_str = emit_expr_go(body);
+            format!("func({}) {} {{ return {} }}", ps, ret_str, body_str)
+        }
     }
 }
-
-/// Convert an interpolation template to a (fmt_string, var_names) pair for Sprintf.
 /// `"Hello {name}!"` → `("Hello %v!", ["name"])`
 fn interp_to_sprintf(template: &str) -> (String, Vec<&str>) {
     let mut fmt_str = String::new();

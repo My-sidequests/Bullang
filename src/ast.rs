@@ -163,7 +163,9 @@ pub struct BulletSig {
     pub returns: BuType,
 }
 
-pub type TypeEnv = HashMap<String, BulletSig>;
+pub type TypeEnv   = HashMap<String, BulletSig>;
+pub type StructEnv = HashMap<String, StructDef>;
+pub type EnumEnv   = HashMap<String, EnumDef>;
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
@@ -185,6 +187,28 @@ pub enum Atom {
     /// Each codegen resolves the placeholders into its own format mechanism.
     Interp(String),
     Call { name: String, args: Vec<CallArg> },
+    /// Unary expression: `!b` or `-x`
+    Unary { op: String, rhs: Box<Atom> },
+    /// Struct field access: `point.x` or `player.position.y`
+    FieldAccess { base: String, fields: Vec<String> },
+    /// String character index: `s[i]` → char
+    Index { base: String, idx: Box<Expr> },
+    /// String slice: `s[i..j]` → String
+    Slice { base: String, from: Box<Expr>, to: Box<Expr> },
+    /// Inline builtin call usable as a pipe expression: `builtin::assert(cond)`
+    /// Distinct from BulletBody::Builtin (whole-function-body form).
+    BuiltinExpr { name: String, args: Vec<Expr> },
+    /// Enum variant access: `Direction.North`
+    /// Produced by the lowering pass from FieldAccess when the base is a known enum.
+    EnumVariant { ty: String, variant: String },
+    /// Inline anonymous function: `|a: i32, b: i32| -> i32 { a + b }`
+    Closure { params: Vec<ClosureParam>, ret: BuType, body: Box<Expr> },
+}
+
+#[derive(Debug, Clone)]
+pub struct ClosureParam {
+    pub name: String,
+    pub ty:   BuType,
 }
 
 #[derive(Debug, Clone)]
@@ -262,16 +286,31 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
 }
 
+// ── Enum definitions ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+}
+
+/// A C-style enum. Variants are integer tags — no data payloads.
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name:     String,
+    pub variants: Vec<EnumVariant>,
+}
+
 // ── Bullet ────────────────────────────────────────────────────────────────────
 
 /// A single function. All bullets are always public — there is no private code.
 #[derive(Debug, Clone)]
 pub struct Bullet {
-    pub name:   String,
-    pub params: Vec<Param>,
-    pub output: OutputDecl,
-    pub body:   BulletBody,
-    pub span:   Span,
+    pub name:        String,
+    pub type_params: Vec<String>,   // e.g. ["T"] for let max[T](...)
+    pub params:      Vec<Param>,
+    pub output:      OutputDecl,
+    pub body:        BulletBody,
+    pub span:        Span,
 }
 
 // ── Inventory entry ───────────────────────────────────────────────────────────
@@ -298,6 +337,7 @@ pub struct InventoryFile {
     pub lang:    Option<Backend>,      // #lang: ext;
     pub libs:    Vec<String>,          // #lib: header; (C/C++ only)
     pub structs: Vec<StructDef>,       // struct definitions for this folder
+    pub enums:   Vec<EnumDef>,         // enum definitions for this folder
     pub entries: Vec<InventoryEntry>,  // one per source file in this folder
 }
 
@@ -305,4 +345,45 @@ pub struct InventoryFile {
 pub enum BuFile {
     Source(SourceFile),
     Inventory(InventoryFile),
+}
+
+// ── Lowering pass: FieldAccess → EnumVariant ──────────────────────────────────
+
+/// Convert `Type.Variant` (parsed as FieldAccess) to `Atom::EnumVariant`
+/// for all single-field accesses where the base name is a known enum.
+/// Run this before typechecking and before codegen.
+pub fn lower_enum_refs(sf: &mut SourceFile, enum_env: &EnumEnv) {
+    for bullet in &mut sf.bullets {
+        if let BulletBody::Pipes(pipes) = &mut bullet.body {
+            for pipe in pipes {
+                lower_expr(&mut pipe.expr, enum_env);
+            }
+        }
+    }
+}
+
+fn lower_expr(expr: &mut Expr, env: &EnumEnv) {
+    match expr {
+        Expr::Atom(a)      => lower_atom(a, env),
+        Expr::BinOp(b)     => { lower_atom(&mut b.lhs, env); lower_atom(&mut b.rhs, env); }
+        Expr::Tuple(exprs) => { for e in exprs { lower_expr(e, env); } }
+    }
+}
+
+fn lower_atom(atom: &mut Atom, env: &EnumEnv) {
+    match atom {
+        Atom::FieldAccess { base, fields } if fields.len() == 1 && env.contains_key(base) => {
+            let ty      = base.clone();
+            let variant = fields[0].clone();
+            *atom = Atom::EnumVariant { ty, variant };
+        }
+        Atom::Unary { rhs, .. }         => lower_atom(rhs, env),
+        Atom::Index { idx, .. }         => lower_expr(idx, env),
+        Atom::Slice { from, to, .. }    => { lower_expr(from, env); lower_expr(to, env); }
+        Atom::BuiltinExpr { args, .. }  => { for a in args { lower_expr(a, env); } }
+        Atom::Closure { body, .. }      => lower_expr(body, env),
+        // Call args are strings — no AST nodes to lower.
+        // FieldAccess with 2+ fields, Ident, Literal, EnumVariant: no-op.
+        _ => {}
+    }
 }

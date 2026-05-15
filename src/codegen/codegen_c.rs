@@ -11,8 +11,53 @@ use crate::ast::*;
 pub fn emit_source_c(file: &SourceFile, header_name: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("#include \"{}\"\n", header_name));
-    out.push_str("#include <stdlib.h>\n");
-    out.push_str("#include <string.h>\n\n");
+    if needs_stdlib(file) {
+        out.push_str("#include <stdlib.h>\n");
+    }
+    if needs_string_h(file) {
+        out.push_str("#include <string.h>\n");
+    }
+    if out.ends_with('\n') && !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+
+    for func in &file.bullets {
+        out.push_str(&emit_function_c(func));
+        out.push('\n');
+    }
+    out
+}
+
+/// Single-file mode: emit a self-contained `.c` with no companion `.h`.
+/// Includes and forward declarations are inlined at the top.
+pub fn emit_source_c_standalone(file: &SourceFile) -> String {
+    let mut out = String::new();
+    out.push_str("#include <stdint.h>\n");
+    if needs_stdbool(file) {
+        out.push_str("#include <stdbool.h>\n");
+    }
+    if needs_stdlib(file) {
+        out.push_str("#include <stdlib.h>\n");
+    }
+    if needs_string_h(file) {
+        out.push_str("#include <string.h>\n");
+    }
+    out.push('\n');
+
+    // Tuple typedefs — one per unique combination used in this file
+    let tuple_types = collect_tuple_types_c(&[("_".to_string(), file)]);
+    for inner in &tuple_types {
+        out.push_str(&emit_tuple_struct_c(inner));
+        out.push('\n');
+    }
+
+    // Forward-declare every function so order of definition doesn't matter.
+    for func in &file.bullets {
+        out.push_str(&emit_forward_decl_c(func));
+    }
+    if !file.bullets.is_empty() {
+        out.push('\n');
+    }
 
     for func in &file.bullets {
         out.push_str(&emit_function_c(func));
@@ -33,6 +78,16 @@ pub fn emit_struct_c(s: &crate::ast::StructDef) -> String {
     out
 }
 
+pub fn emit_enum_c(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str("typedef enum {\n");
+    for v in &e.variants {
+        out.push_str(&format!("    {},\n", v.name));
+    }
+    out.push_str(&format!("}} {};\n", e.name));
+    out
+}
+
 // ── foreign_types.h detection ─────────────────────────────────────────────────
 
 /// Returns true if the source file uses any type that requires foreign_types.h.
@@ -41,6 +96,85 @@ pub fn needs_foreign_types(file: &SourceFile) -> bool {
         b.params.iter().any(|p| type_needs_foreign(&p.ty))
             || type_needs_foreign(&b.output.ty)
     })
+}
+
+pub fn needs_generic_types(file: &SourceFile) -> bool {
+    file.bullets.iter().any(|b| !b.type_params.is_empty())
+}
+
+/// `<stdbool.h>` — needed when `bool` appears anywhere in the public API.
+pub fn needs_stdbool(file: &SourceFile) -> bool {
+    file.bullets.iter().any(|b| {
+        type_is_bool(&b.output.ty) || b.params.iter().any(|p| type_is_bool(&p.ty))
+    })
+}
+
+fn type_is_bool(ty: &BuType) -> bool {
+    match ty {
+        BuType::Named(s)    => s == "bool",
+        BuType::Array(t, _) => type_is_bool(t),
+        BuType::Tuple(ts)   => ts.iter().any(type_is_bool),
+        BuType::Unknown     => false,
+    }
+}
+
+/// `<stdlib.h>` — needed when native blocks reference `malloc`, `free`, `calloc`,
+/// `realloc`, or `exit`, or when `Option[T]` types appear (nullable pointer idiom).
+pub fn needs_stdlib(file: &SourceFile) -> bool {
+    const MARKERS: &[&str] = &["malloc", "calloc", "realloc", "free", "exit", "abort", "NULL"];
+    file.bullets.iter().any(|b| {
+        any_type_needs_stdlib(&b.output.ty)
+            || b.params.iter().any(|p| any_type_needs_stdlib(&p.ty))
+            || native_blocks_contain(b, MARKERS)
+    })
+}
+
+fn any_type_needs_stdlib(ty: &BuType) -> bool {
+    match ty {
+        BuType::Named(s) => s.starts_with("Option["),
+        BuType::Array(t, _) => any_type_needs_stdlib(t),
+        BuType::Tuple(ts)   => ts.iter().any(any_type_needs_stdlib),
+        BuType::Unknown     => false,
+    }
+}
+
+/// `<string.h>` — needed when any slice expression (`strndup`) or native block
+/// references string functions.
+pub fn needs_string_h(file: &SourceFile) -> bool {
+    const MARKERS: &[&str] = &["strndup", "strlen", "strcpy", "strcat", "strcmp",
+                                "strncpy", "memcpy", "memmove", "memset", "memcmp"];
+    file.bullets.iter().any(|b| {
+        body_has_slice(&b.body) || native_blocks_contain(b, MARKERS)
+    })
+}
+
+fn body_has_slice(body: &BulletBody) -> bool {
+    match body {
+        BulletBody::Pipes(pipes) => pipes.iter().any(|p| expr_has_slice(&p.expr)),
+        _ => false,
+    }
+}
+
+fn expr_has_slice(expr: &Expr) -> bool {
+    match expr {
+        Expr::Atom(a)      => atom_has_slice(a),
+        Expr::BinOp(b)     => atom_has_slice(&b.lhs) || atom_has_slice(&b.rhs),
+        Expr::Tuple(exprs) => exprs.iter().any(expr_has_slice),
+    }
+}
+
+fn atom_has_slice(atom: &Atom) -> bool {
+    matches!(atom, Atom::Slice { .. })
+}
+
+/// Returns true if any native block in `bullet` contains any of the given substrings.
+fn native_blocks_contain(bullet: &Bullet, markers: &[&str]) -> bool {
+    match &bullet.body {
+        BulletBody::Natives(blocks) => blocks.iter().any(|b| {
+            markers.iter().any(|m| b.code.contains(m))
+        }),
+        _ => false,
+    }
 }
 
 fn type_needs_foreign(ty: &BuType) -> bool {
@@ -57,26 +191,46 @@ pub fn emit_header_c(
     source_files: &[(String, &SourceFile)],
     includes:     &[String],
     structs:      &[crate::ast::StructDef],
+    enums:        &[crate::ast::EnumDef],
 ) -> String {
     let guard    = format!("{}_H", module_name.to_uppercase().replace('-', "_"));
-    let needs_ft = source_files.iter().any(|(_, sf)| needs_foreign_types(sf));
-    let mut out  = String::new();
+    let needs_ft   = source_files.iter().any(|(_, sf)| needs_foreign_types(sf));
+    let needs_gen  = source_files.iter().any(|(_, sf)| needs_generic_types(sf));
+    let needs_bool = source_files.iter().any(|(_, sf)| needs_stdbool(sf));
+    let mut out    = String::new();
 
     out.push_str(&format!("#ifndef {}\n#define {}\n\n", guard, guard));
     out.push_str("#include <stdint.h>\n");
-    out.push_str("#include <stdbool.h>\n");
-    out.push_str("#include <stddef.h>\n");
+    if needs_bool {
+        out.push_str("#include <stdbool.h>\n");
+    }
     if needs_ft {
         out.push_str("#include \"foreign_types.h\"\n");
+    }
+    if needs_gen {
+        out.push_str("#include \"bu_generic.h\"\n");
     }
     for inc in includes {
         out.push_str(&format!("#include <{}>\n", inc));
     }
     out.push('\n');
 
-    // Inventory struct typedefs — appear in header, usable across all .c files
+    // Enum typedefs — variants land in global scope (C enum semantics)
+    for e in enums {
+        out.push_str(&emit_enum_c(e));
+        out.push('\n');
+    }
+
+    // Inventory struct typedefs
     for s in structs {
         out.push_str(&emit_struct_c(s));
+        out.push('\n');
+    }
+
+    // Tuple typedefs — one per unique combination used anywhere in this module
+    let tuple_types = collect_tuple_types_c(source_files);
+    for inner in &tuple_types {
+        out.push_str(&emit_tuple_struct_c(inner));
         out.push('\n');
     }
 
@@ -98,8 +252,12 @@ pub fn emit_header_c(
 
 pub fn emit_main_c(file: &SourceFile, header_name: &str) -> String {
     let mut out = String::new();
+    // <stdio.h> is always included in main — assert expressions emit fprintf(stderr,...)
+    // and virtually every entry point does some I/O.
     out.push_str("#include <stdio.h>\n");
-    out.push_str("#include <stdlib.h>\n");
+    if needs_stdlib(file) {
+        out.push_str("#include <stdlib.h>\n");
+    }
     out.push_str(&format!("#include \"{}\"\n\n", header_name));
 
     for func in &file.bullets {
@@ -152,14 +310,154 @@ pub fn emit_makefile(
 
 // ── Function emitters ─────────────────────────────────────────────────────────
 
+/// Emit a forward declaration (prototype) for a single function.
+fn emit_forward_decl_c(func: &Bullet) -> String {
+    if func.type_params.is_empty() {
+        let params = c_param_list(&func.params);
+        let ret    = bu_type_to_c(&func.output.ty);
+        format!("{} {}({});\n", ret, func.name, params)
+    } else {
+        let params = c_generic_param_list(&func.params, &func.type_params);
+        let ret    = c_generic_type(&func.output.ty, &func.type_params);
+        format!("{} {}({});\n", ret, func.name, params)
+    }
+}
+
 fn emit_function_c(func: &Bullet) -> String {
-    let mut out   = String::new();
-    let params    = c_param_list(&func.params);
-    let ret       = bu_type_to_c(&func.output.ty);
-    out.push_str(&format!("{} {}({}) {{\n", ret, func.name, params));
-    emit_body_c(&mut out, &func.body, &func.params, &Backend::C);
+    let mut out = String::new();
+
+    if func.type_params.is_empty() {
+        let params = c_param_list(&func.params);
+        let ret    = bu_type_to_c(&func.output.ty);
+        out.push_str(&format!("{} {}({}) {{\n", ret, func.name, params));
+        emit_body_c(&mut out, &func.body, &func.params, &Backend::C);
+    } else {
+        // Generic function — type params become BuVal.
+        out.push_str("#include \"bu_generic.h\"\n");
+        let params = c_generic_param_list(&func.params, &func.type_params);
+        let ret    = c_generic_type(&func.output.ty, &func.type_params);
+        out.push_str(&format!("{} {}({}) {{\n", ret, func.name, params));
+        emit_body_c_generic(&mut out, &func.body, &func.type_params);
+    }
+
     out.push_str("}\n");
     out
+}
+
+/// Param list for a generic C function: type params → BuVal, concrete types unchanged.
+fn c_generic_param_list(params: &[Param], type_params: &[String]) -> String {
+    params.iter()
+        .map(|p| format!("{} {}", c_generic_type(&p.ty, type_params), p.name))
+        .collect::<Vec<_>>().join(", ")
+}
+
+/// Map a type to its C representation — type param names become BuVal.
+fn c_generic_type(ty: &BuType, type_params: &[String]) -> String {
+    match ty {
+        BuType::Named(s) if type_params.contains(s) => "BuVal".to_string(),
+        other => bu_type_to_c(other),
+    }
+}
+
+/// Emit a function body where type-param-typed values are BuVal.
+/// All binary ops use bu_val_* dispatch; integer/float literals are wrapped.
+fn emit_body_c_generic(out: &mut String, body: &BulletBody, type_params: &[String]) {
+    match body {
+        BulletBody::Pipes(pipes) => {
+            if pipes.is_empty() { return; }
+            let last = pipes.len().saturating_sub(1);
+            for (i, pipe) in pipes.iter().enumerate() {
+                let expr_str = emit_expr_c_generic(&pipe.expr, type_params);
+                if i == last {
+                    out.push_str(&format!("    return {};\n", expr_str));
+                } else {
+                    out.push_str(&format!("    BuVal {} = {};\n", pipe.binding, expr_str));
+                }
+            }
+        }
+        BulletBody::Natives(blocks) => {
+            // Native blocks in a generic function are emitted verbatim — user takes
+            // responsibility for using BuVal correctly.
+            if let Some(b) = blocks.iter().find(|b| b.backend == Backend::C || b.backend == Backend::Cpp) {
+                for line in b.code.lines() {
+                    out.push_str(&format!("    {}\n", line));
+                }
+            }
+        }
+        BulletBody::Builtin(name) => {
+            out.push_str(&format!("    /* builtin::{} in generic context */\n", name));
+        }
+    }
+}
+
+/// Expression emitter for generic C functions — all ops route through bu_val_*.
+fn emit_expr_c_generic(expr: &Expr, tp: &[String]) -> String {
+    match expr {
+        Expr::Atom(a)  => emit_atom_c_generic(a, tp),
+        Expr::BinOp(b) => {
+            let l = emit_atom_c_generic(&b.lhs, tp);
+            let r = emit_atom_c_generic(&b.rhs, tp);
+            let fn_name = match b.op.as_str() {
+                "+"  => "bu_val_add",
+                "-"  => "bu_val_sub",
+                "*"  => "bu_val_mul",
+                "/"  => "bu_val_div",
+                "%"  => "bu_val_mod",
+                "==" => "bu_val_eq",
+                "!=" => "bu_val_ne",
+                "<"  => "bu_val_lt",
+                ">"  => "bu_val_gt",
+                "<=" => "bu_val_le",
+                ">=" => "bu_val_ge",
+                "&&" => "bu_val_and",
+                "||" => "bu_val_or",
+                op   => return format!("({} {} {})", l, op, r),
+            };
+            format!("{}({}, {})", fn_name, l, r)
+        }
+        Expr::Tuple(exprs) => {
+            let fields: Vec<String> = exprs.iter().enumerate()
+                .map(|(i, e)| format!(".v{} = {}", i, emit_expr_c_generic(e, tp)))
+                .collect();
+            format!("({{{}}})", fields.join(", "))
+        }
+    }
+}
+
+/// Atom emitter for generic C functions — wraps literals as BuVal.
+fn emit_atom_c_generic(atom: &Atom, tp: &[String]) -> String {
+    match atom {
+        Atom::Integer(n)  => format!("bu_i64({})", n),
+        Atom::Float(n)    => format!("bu_f64({})", n),
+        Atom::StringLit(s) => format!("bu_str(\"{}\")", s),
+        Atom::Ident(s)    => s.clone(), // already BuVal if it was a type-param param
+        Atom::Unary { op, rhs } => {
+            let r = emit_atom_c_generic(rhs, tp);
+            if op == "-" { format!("bu_val_neg({})", r) }
+            else         { format!("bu_val_not({})", r) }
+        }
+        Atom::EnumVariant { variant, .. } => format!("bu_i64({})", variant),
+        Atom::Closure { params, ret, body } => {
+            static COUNTER: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let ps_decl = params.iter()
+                .map(|p| format!("{} {}", bu_type_to_c(&p.ty), p.name))
+                .collect::<Vec<_>>().join(", ");
+            let ret_str  = bu_type_to_c(ret);
+            let body_str = emit_expr_c_generic(body, tp);
+            format!(
+                "__extension__ ({{ {ret} __bu_closure_{n}({ps}) {{ return {body}; }} \
+                 &__bu_closure_{n}; }})",
+                ret  = ret_str,
+                n    = n,
+                ps   = ps_decl,
+                body = body_str,
+            )
+        }
+        // For non-generic atoms, fall back to the regular C emitter.
+        other => emit_atom_c(other),
+    }
 }
 
 fn emit_main_function_c(func: &Bullet) -> String {
@@ -236,9 +534,11 @@ pub fn emit_expr_c(expr: &Expr) -> String {
         Expr::Atom(a)      => emit_atom_c(a),
         Expr::BinOp(b)     => format!("{} {} {}", emit_atom_c(&b.lhs), b.op, emit_atom_c(&b.rhs)),
         Expr::Tuple(exprs) => {
-            // C has no tuple type — emit as a struct initialiser comment
-            format!("/* tuple: {} */",
-                exprs.iter().map(emit_expr_c).collect::<Vec<_>>().join(", "))
+            // Emit as a compound literal: (Tuple_T_U){ .v0 = x, .v1 = y }
+            let fields: Vec<String> = exprs.iter().enumerate()
+                .map(|(i, e)| format!(".v{} = {}", i, emit_expr_c(e)))
+                .collect();
+            format!("({{{}}})", fields.join(", "))
         }
     }
 }
@@ -249,6 +549,37 @@ pub fn emit_atom_c(atom: &Atom) -> String {
         Atom::Float(n) => n.to_string(),
         Atom::Integer(n)       => n.to_string(),
         Atom::StringLit(s)     => format!("\"{}\"", s),
+        Atom::BuiltinExpr { name, args } => {
+            match name.as_str() {
+                "assert" => {
+                    let cond = emit_expr_c(&args[0]);
+                    format!(
+                        "({{ int __r = (int)({cond}); \
+                         if (!__r) {{ fprintf(stderr, \"[assert] failed\\n\"); }} \
+                         __r; }})"
+                    )
+                }
+                "assert_eq" => {
+                    let lhs = emit_expr_c(&args[0]);
+                    let rhs = emit_expr_c(&args[1]);
+                    format!(
+                        "({{ int __ok = (({lhs}) == ({rhs})); \
+                         if (!__ok) {{ fprintf(stderr, \"[assert_eq] failed\\n\"); }} \
+                         __ok; }})"
+                    )
+                }
+                "assert_ne" => {
+                    let lhs = emit_expr_c(&args[0]);
+                    let rhs = emit_expr_c(&args[1]);
+                    format!(
+                        "({{ int __ok = (({lhs}) != ({rhs})); \
+                         if (!__ok) {{ fprintf(stderr, \"[assert_ne] values were equal\\n\"); }} \
+                         __ok; }})"
+                    )
+                }
+                other => format!("0 /* builtin::{other} not supported as expression */"),
+            }
+        }
         Atom::Interp(template) => {
             // C/C++: produce a snprintf call into a stack buffer.
             // "Hello {name}!" → snprintf(buf, sizeof(buf), "Hello %s!", name)
@@ -270,10 +601,37 @@ pub fn emit_atom_c(atom: &Atom) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
         }
+        Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom_c(rhs)),
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}[{}]", base, emit_expr_c(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("strndup(({}) + ({}), (size_t)(({})-({0})))",
+                base, emit_expr_c(from), emit_expr_c(to)),
+        // C typedef enum: variants are in global scope — emit bare variant name
+        Atom::EnumVariant { variant, .. } => variant.clone(),
+        // C closures via GCC compound statement with nested function.
+        // The nested function is named __bu_closure_N (unique per call site).
+        Atom::Closure { params, ret, body } => {
+            static COUNTER: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let ps_decl = params.iter()
+                .map(|p| format!("{} {}", bu_type_to_c(&p.ty), p.name))
+                .collect::<Vec<_>>().join(", ");
+            let ret_str  = bu_type_to_c(ret);
+            let body_str = emit_expr_c(body);
+            format!(
+                "__extension__ ({{ {ret} __bu_closure_{n}({ps}) {{ return {body}; }} \
+                 &__bu_closure_{n}; }})",
+                ret  = ret_str,
+                n    = n,
+                ps   = ps_decl,
+                body = body_str,
+            )
+        }
     }
 }
-
-/// Convert an interpolation template to a (printf_fmt, var_names) pair.
 /// `"Hello {name}!"` → `("Hello %s!", ["name"])`
 fn interp_to_printf(template: &str) -> (String, Vec<&str>) {
     let mut fmt_str = String::new();
@@ -305,12 +663,55 @@ fn interp_to_printf(template: &str) -> (String, Vec<&str>) {
     (fmt_str, vars)
 }
 
+// ── Tuple struct support ──────────────────────────────────────────────────────
+
+/// `Tuple[i32, f64]` → `Tuple_i32_f64`
+pub fn tuple_c_name(inner: &[BuType]) -> String {
+    let parts: Vec<String> = inner.iter()
+        .map(|t| bu_type_to_c(t).replace(['*', ' ', '[', ']'], "_").trim_matches('_').to_string())
+        .collect();
+    format!("Tuple_{}", parts.join("_"))
+}
+
+/// Emit a `typedef struct` for a tuple combination, e.g.:
+/// ```c
+/// typedef struct { int32_t v0; double v1; } Tuple_i32_f64;
+/// ```
+pub fn emit_tuple_struct_c(inner: &[BuType]) -> String {
+    let name   = tuple_c_name(inner);
+    let fields: String = inner.iter().enumerate()
+        .map(|(i, t)| format!("    {} v{};\n", bu_type_to_c(t), i))
+        .collect();
+    format!("typedef struct {{\n{}}} {};\n", fields, name)
+}
+
+/// Collect all unique Tuple type combinations used in a set of source files.
+pub fn collect_tuple_types_c(source_files: &[(String, &SourceFile)]) -> Vec<Vec<BuType>> {
+    let mut seen: Vec<Vec<BuType>> = Vec::new();
+
+    fn scan(ty: &BuType, seen: &mut Vec<Vec<BuType>>) {
+        if let BuType::Tuple(inner) = ty {
+            if !seen.contains(inner) {
+                seen.push(inner.clone());
+            }
+        }
+    }
+
+    for (_, sf) in source_files {
+        for func in &sf.bullets {
+            scan(&func.output.ty, &mut seen);
+            for p in &func.params { scan(&p.ty, &mut seen); }
+        }
+    }
+    seen
+}
+
 // ── Type mapping: Bullang → C ─────────────────────────────────────────────────
 
 pub fn bu_type_to_c(ty: &BuType) -> String {
     match ty {
         BuType::Named(s)     => rust_type_to_c(s),
-        BuType::Tuple(_)     => "void*  /* tuple — use a struct */".to_string(),
+        BuType::Tuple(ts)    => tuple_c_name(ts),
         BuType::Array(t, n)  => format!("{}[{}]", bu_type_to_c(t), n),
         BuType::Unknown      => "void*".to_string(),
     }
@@ -368,6 +769,11 @@ fn translate_c_generic(s: &str) -> String {
     // Fn[...] → function pointer
     if s.starts_with("Fn[") {
         return "void*  /* fn ptr */".to_string();
+    }
+    // Bare type parameter (e.g. T, K, V, E) in a non-generic context — shouldn't
+    // normally occur; pass through with a comment.
+    if s.chars().all(|c| c.is_alphabetic()) && s.len() <= 2 {
+        return "BuVal  /* generic type param */".to_string();
     }
     // Unknown: pass through
     format!("{}  /* ? */", s)

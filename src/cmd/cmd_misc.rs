@@ -9,17 +9,6 @@ pub const DEFAULT_REPO: &str = "https://github.com/My-sidequests/Bullang.git";
 
 // ── install ───────────────────────────────────────────────────────────────────
 
-pub fn cmd_install() {
-    println!("Installing bullang via cargo...");
-    let status = std::process::Command::new("cargo")
-        .args(["install", "--path", "."])
-        .status();
-
-    if let Ok(s) = status {
-        if s.success() { println!("Installed to ~/.cargo/bin"); }
-    }
-}
-
 // ── update ────────────────────────────────────────────────────────────────────
 
 pub fn cmd_update(experimental: bool) {

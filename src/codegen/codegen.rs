@@ -29,6 +29,17 @@ pub fn emit_struct_rs(s: &crate::ast::StructDef) -> String {
     out
 }
 
+pub fn emit_enum_rs(e: &crate::ast::EnumDef) -> String {
+    let mut out = String::new();
+    out.push_str("#[derive(Debug, Clone, PartialEq, Eq)]\n");
+    out.push_str(&format!("pub enum {} {{\n", e.name));
+    for v in &e.variants {
+        out.push_str(&format!("    {},\n", v.name));
+    }
+    out.push_str("}\n");
+    out
+}
+
 // ── main.bu → main.rs ─────────────────────────────────────────────────────────
 
 /// Emits src/main.rs from the parsed main.bu.
@@ -90,12 +101,15 @@ pub fn emit_mod_rs(child_modules: &[String]) -> String {
     out
 }
 
-pub fn emit_lib_rs(child_modules: &[String], structs: &[crate::ast::StructDef]) -> String {
+pub fn emit_lib_rs(child_modules: &[String], structs: &[crate::ast::StructDef], enums: &[crate::ast::EnumDef]) -> String {
     let mut out = String::new();
     out.push_str("#![allow(unused_imports)]\n\n");
-    // Struct definitions from inventory — always at the top, visible to all modules
     for s in structs {
         out.push_str(&emit_struct_rs(s));
+        out.push('\n');
+    }
+    for e in enums {
+        out.push_str(&emit_enum_rs(e));
         out.push('\n');
     }
     for module in child_modules {
@@ -139,16 +153,6 @@ fn translate_named_to_rust(s: &str) -> String {
     if s.starts_with("Option[") && s.ends_with(']') {
         let inner = &s[7..s.len()-1];
         return format!("Option<{}>", translate_named_to_rust(inner));
-    }
-    // Result[T, E] → Result<T, E>
-    if s.starts_with("Result[") && s.ends_with(']') {
-        let inner = &s[7..s.len()-1];
-        // split on first comma not inside brackets
-        let parts = split_top_level(inner, ',');
-        let translated: Vec<String> = parts.iter()
-            .map(|p| translate_named_to_rust(p.trim()))
-            .collect();
-        return format!("Result<{}>", translated.join(", "));
     }
     // Tuple[T, U] → (T, U)
     if s.starts_with("Tuple[") && s.ends_with(']') {
@@ -237,10 +241,39 @@ fn emit_function(func: &Bullet, backend: &Backend) -> String {
         .collect::<Vec<_>>().join(", ");
     let ret_ty = bu_type_to_rust(&func.output.ty);
 
-    out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
+    if func.type_params.is_empty() {
+        out.push_str(&format!("pub fn {}({}) -> {} {{\n", func.name, params, ret_ty));
+    } else {
+        // Infer bounds: PartialOrd if body uses comparison ops, Clone if it uses clone-requiring ops.
+        let bounds = rust_generic_bounds(func);
+        let type_str = func.type_params.iter()
+            .map(|t| format!("{}: {}", t, bounds))
+            .collect::<Vec<_>>().join(", ");
+        out.push_str(&format!("pub fn {}<{}>({}) -> {} {{\n", func.name, type_str, params, ret_ty));
+    }
+
     emit_body(&mut out, &func.body, &func.params, backend);
     out.push_str("}\n");
     out
+}
+
+/// Infer the minimal trait bound for a generic Rust function.
+/// Scans the pipe expressions for comparison ops → PartialOrd.
+/// Always adds Clone for safety (generic types may need it for binding).
+fn rust_generic_bounds(func: &Bullet) -> &'static str {
+    let has_cmp = if let BulletBody::Pipes(pipes) = &func.body {
+        pipes.iter().any(|p| expr_has_cmp(&p.expr))
+    } else {
+        false
+    };
+    if has_cmp { "PartialOrd + Clone" } else { "Clone" }
+}
+
+fn expr_has_cmp(expr: &Expr) -> bool {
+    match expr {
+        Expr::BinOp(b) => matches!(b.op.as_str(), "<" | ">" | "<=" | ">=" | "==" | "!="),
+        _ => false,
+    }
 }
 
 /// Emit the `main` function: no pub, no return type annotation.
@@ -315,6 +348,38 @@ fn emit_expr(expr: &Expr) -> String {
     }
 }
 
+fn emit_builtin_expr(name: &str, args: &[Expr], emit: fn(&Expr) -> String) -> String {
+    match name {
+        "assert" => {
+            let cond = args.first().map(|e| emit(e)).unwrap_or_default();
+            format!(
+                "{{ let __r = ({cond}); \
+                 if !__r {{ eprintln!(\"[assert] failed: {{}}\", stringify!({cond})); }} \
+                 __r }}"
+            )
+        }
+        "assert_eq" => {
+            let lhs = emit(&args[0]);
+            let rhs = emit(&args[1]);
+            format!(
+                "{{ let __l = {lhs}; let __r = {rhs}; let __ok = __l == __r; \
+                 if !__ok {{ eprintln!(\"[assert_eq] expected {{:?}}, got {{:?}}\", __r, __l); }} \
+                 __ok }}"
+            )
+        }
+        "assert_ne" => {
+            let lhs = emit(&args[0]);
+            let rhs = emit(&args[1]);
+            format!(
+                "{{ let __l = {lhs}; let __r = {rhs}; let __ok = __l != __r; \
+                 if !__ok {{ eprintln!(\"[assert_ne] expected values to differ, both were {{:?}}\", __l); }} \
+                 __ok }}"
+            )
+        }
+        other => format!("/* builtin::{other} not supported as expression */"),
+    }
+}
+
 fn emit_atom(atom: &Atom) -> String {
     match atom {
         Atom::Ident(s)            => s.clone(),
@@ -338,6 +403,22 @@ fn emit_atom(atom: &Atom) -> String {
                 CallArg::BulletRef(s) => s.clone(),
             }).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args_str)
+        }
+        Atom::BuiltinExpr { name, args } => emit_builtin_expr(name, args, emit_expr),
+        Atom::Unary { op, rhs } => format!("({}{})", op, emit_atom(rhs)),
+        Atom::FieldAccess { base, fields } => format!("{}.{}", base, fields.join(".")),
+        Atom::Index { base, idx } =>
+            format!("{}.chars().nth(({}) as usize).unwrap_or('\\0')", base, emit_expr(idx)),
+        Atom::Slice { base, from, to } =>
+            format!("{}.chars().skip({}).take(({}) - ({})).collect::<String>()",
+                base, emit_expr(from), emit_expr(to), emit_expr(from)),
+        Atom::EnumVariant { ty, variant } => format!("{}::{}", ty, variant),
+        Atom::Closure { params, ret, body } => {
+            let ps = params.iter()
+                .map(|p| format!("{}: {}", p.name, bu_type_to_rust(&p.ty)))
+                .collect::<Vec<_>>().join(", ");
+            let ret_str = bu_type_to_rust(ret);
+            format!("|{}| -> {} {{ {} }}", ps, ret_str, emit_expr(body))
         }
     }
 }

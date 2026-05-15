@@ -76,7 +76,7 @@ fn is_known_primitive(s: &str) -> bool {
         "i8"|"i16"|"i32"|"i64"|"i128"|"isize"|
         "u8"|"u16"|"u32"|"u64"|"u128"|"usize"|
         "f32"|"f64"|"bool"|"char"|"String"|"str"|
-        "Vec"|"Option"|"Result"|"Tuple"|"Fn"|"Box"|"HashMap"
+        "Vec"|"Option"|"Tuple"|"Fn"|"Box"|"HashMap"
     )
 }
 

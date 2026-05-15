@@ -245,6 +245,18 @@ fn parse_struct_def(pair: Pair<Rule>) -> crate::ast::StructDef {
     crate::ast::StructDef { name, fields }
 }
 
+fn parse_enum_def(pair: Pair<Rule>) -> crate::ast::EnumDef {
+    let mut inner = pair.into_inner();
+    let name      = inner.next().unwrap().as_str().to_string();
+    // enum_variants contains enum_variant* children
+    let variants_pair = inner.next().unwrap();
+    let variants = variants_pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::enum_variant)
+        .map(|p| crate::ast::EnumVariant { name: p.as_str().to_string() })
+        .collect();
+    crate::ast::EnumDef { name, variants }
+}
+
 // ── Inventory file ────────────────────────────────────────────────────────────
 
 fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
@@ -252,6 +264,7 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
     let mut lang    = None;
     let mut libs    = Vec::new();
     let mut structs = Vec::new();
+    let mut enums   = Vec::new();
     let mut entries = Vec::new();
 
     for inner in pair.into_inner() {
@@ -270,6 +283,9 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
             Rule::struct_def => {
                 structs.push(parse_struct_def(inner));
             }
+            Rule::enum_def => {
+                enums.push(parse_enum_def(inner));
+            }
             Rule::inv_entry => {
                 let mut ci    = inner.into_inner();
                 let file      = ci.next().unwrap().as_str().to_string();
@@ -286,6 +302,7 @@ fn parse_inventory(pair: Pair<Rule>) -> InventoryFile {
         lang,
         libs,
         structs,
+        enums,
         entries,
     }
 }
@@ -296,10 +313,21 @@ fn parse_bullet(pair: Pair<Rule>) -> Bullet {
     let bullet_span = span_of(&pair);
     let mut inner   = pair.into_inner();
     let name        = inner.next().unwrap().as_str().to_string();
-    let params      = parse_param_list(inner.next().unwrap());
-    let output      = parse_output_decl(inner.next().unwrap());
-    let body        = parse_bullet_body(inner.next().unwrap());
-    Bullet { name, params, output, body, span: bullet_span }
+
+    // Optional type_params: "[T]" or "[K, V]"
+    let type_params = match inner.peek().map(|p| p.as_rule()) {
+        Some(Rule::type_params) => {
+            inner.next().unwrap().into_inner()
+                .map(|p| p.as_str().to_string())
+                .collect()
+        }
+        _ => vec![],
+    };
+
+    let params = parse_param_list(inner.next().unwrap());
+    let output = parse_output_decl(inner.next().unwrap());
+    let body   = parse_bullet_body(inner.next().unwrap());
+    Bullet { name, type_params, params, output, body, span: bullet_span }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Vec<Param> {
@@ -410,16 +438,70 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
 fn parse_atom(pair: Pair<Rule>) -> Atom {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
+        Rule::builtin_expr => {
+            let mut parts = inner.into_inner();
+            let name = parts.next().unwrap().as_str().to_string();
+            let args = parts.map(parse_expr).collect();
+            Atom::BuiltinExpr { name, args }
+        }
+        Rule::closure => {
+            let mut parts = inner.into_inner();
+            let mut params = Vec::new();
+            // Consume closure_param pairs until we hit the return type (ty rule)
+            // then the body expr. We peek at the rule to distinguish.
+            let mut next = parts.next();
+            while let Some(ref p) = next {
+                if p.as_rule() == Rule::closure_param {
+                    let mut ci = p.clone().into_inner();
+                    let name = ci.next().unwrap().as_str().to_string();
+                    let ty   = parse_ty(ci.next().unwrap());
+                    params.push(crate::ast::ClosureParam { name, ty });
+                    next = parts.next();
+                } else {
+                    break;
+                }
+            }
+            // next is now the return ty
+            let ret  = parse_ty(next.unwrap());
+            let body = parse_expr(parts.next().unwrap());
+            Atom::Closure { params, ret, body: Box::new(body) }
+        }
         Rule::call => {
             let mut ci = inner.into_inner();
             let name   = ci.next().unwrap().as_str().to_string();
             let args   = ci.map(parse_call_arg).collect();
             Atom::Call { name, args }
         }
-        Rule::float      => Atom::Float(inner.as_str().parse().unwrap()),
-        Rule::integer    => Atom::Integer(inner.as_str().parse().unwrap()),
-        Rule::ident      => Atom::Ident(inner.as_str().to_string()),
-        Rule::string_lit => parse_string_atom(inner.as_str()),
+        Rule::float        => Atom::Float(inner.as_str().parse().unwrap()),
+        Rule::integer      => Atom::Integer(inner.as_str().parse().unwrap()),
+        Rule::ident        => Atom::Ident(inner.as_str().to_string()),
+        Rule::string_lit   => parse_string_atom(inner.as_str()),
+        Rule::field_access => {
+            let mut parts = inner.into_inner();
+            let base   = parts.next().unwrap().as_str().to_string();
+            let fields = parts.map(|p| p.as_str().to_string()).collect();
+            Atom::FieldAccess { base, fields }
+        }
+        Rule::index_expr => {
+            let mut parts = inner.into_inner();
+            let base = parts.next().unwrap().as_str().to_string();
+            let idx  = parse_expr(parts.next().unwrap());
+            Atom::Index { base, idx: Box::new(idx) }
+        }
+        Rule::slice_expr => {
+            let mut parts = inner.into_inner();
+            let base = parts.next().unwrap().as_str().to_string();
+            let from = parse_expr(parts.next().unwrap());
+            let to   = parse_expr(parts.next().unwrap());
+            Atom::Slice { base, from: Box::new(from), to: Box::new(to) }
+        }
+        Rule::unary_expr => {
+            let mut ui   = inner.into_inner();
+            let op       = ui.next().unwrap().as_str().to_string();
+            let rhs_pair = ui.next().unwrap();
+            let rhs      = parse_atom(rhs_pair);
+            Atom::Unary { op, rhs: Box::new(rhs) }
+        }
         other => unreachable!("unexpected atom: {:?}", other),
     }
 }
@@ -461,10 +543,16 @@ fn parse_call_arg(pair: Pair<Rule>) -> CallArg {
         Rule::bullet_ref => CallArg::BulletRef(
             inner.into_inner().next().unwrap().as_str().to_string()
         ),
-        Rule::float      => CallArg::Value(inner.as_str().to_string()),
-        Rule::integer    => CallArg::Value(inner.as_str().to_string()),
-        Rule::ident      => CallArg::Value(inner.as_str().to_string()),
-        Rule::string_lit => CallArg::Value(inner.as_str().to_string()),
+        Rule::float        => CallArg::Value(inner.as_str().to_string()),
+        Rule::integer      => CallArg::Value(inner.as_str().to_string()),
+        Rule::ident        => CallArg::Value(inner.as_str().to_string()),
+        Rule::string_lit   => CallArg::Value(inner.as_str().to_string()),
+        Rule::field_access => CallArg::Value(inner.as_str().to_string()),
+        Rule::index_expr   => CallArg::Value(inner.as_str().to_string()),
+        Rule::slice_expr   => CallArg::Value(inner.as_str().to_string()),
+        // Closures as call args are parsed fully; store raw text for now
+        // (the AST node is used; CallArg::Value carries the source text).
+        Rule::closure      => CallArg::Value(inner.as_str().to_string()),
         other => unreachable!("unexpected call_arg: {:?}", other),
     }
 }

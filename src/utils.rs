@@ -19,15 +19,6 @@ pub fn read_file(path: &PathBuf) -> String {
     })
 }
 
-pub fn write_or_print(content: String, output: Option<PathBuf>) {
-    match output {
-        Some(ref p) => std::fs::write(p, &content).unwrap_or_else(|e| {
-            eprintln!("error writing {}: {}", p.display(), e); std::process::exit(1);
-        }),
-        None => print!("{}", content),
-    }
-}
-
 // ── Root detection (probe — no exit on failure) ───────────────────────────────
 
 /// Like find_root_from but returns the given dir if no inventory found (no exit).
