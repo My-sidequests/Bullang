@@ -28,6 +28,44 @@ pub fn emit_source_c(file: &SourceFile, header_name: &str) -> String {
     out
 }
 
+/// Single-file mode: emit a self-contained `.c` with no companion `.h`.
+/// Includes and forward declarations are inlined at the top.
+pub fn emit_source_c_standalone(file: &SourceFile) -> String {
+    let mut out = String::new();
+    out.push_str("#include <stdint.h>\n");
+    if needs_stdbool(file) {
+        out.push_str("#include <stdbool.h>\n");
+    }
+    if needs_stdlib(file) {
+        out.push_str("#include <stdlib.h>\n");
+    }
+    if needs_string_h(file) {
+        out.push_str("#include <string.h>\n");
+    }
+    out.push('\n');
+
+    // Tuple typedefs — one per unique combination used in this file
+    let tuple_types = collect_tuple_types_c(&[("_".to_string(), file)]);
+    for inner in &tuple_types {
+        out.push_str(&emit_tuple_struct_c(inner));
+        out.push('\n');
+    }
+
+    // Forward-declare every function so order of definition doesn't matter.
+    for func in &file.bullets {
+        out.push_str(&emit_forward_decl_c(func));
+    }
+    if !file.bullets.is_empty() {
+        out.push('\n');
+    }
+
+    for func in &file.bullets {
+        out.push_str(&emit_function_c(func));
+        out.push('\n');
+    }
+    out
+}
+
 // ── Struct emitter ────────────────────────────────────────────────────────────
 
 pub fn emit_struct_c(s: &crate::ast::StructDef) -> String {
@@ -189,6 +227,13 @@ pub fn emit_header_c(
         out.push('\n');
     }
 
+    // Tuple typedefs — one per unique combination used anywhere in this module
+    let tuple_types = collect_tuple_types_c(source_files);
+    for inner in &tuple_types {
+        out.push_str(&emit_tuple_struct_c(inner));
+        out.push('\n');
+    }
+
     for (filename, sf) in source_files {
         out.push_str(&format!("/* {} */\n", filename));
         for func in &sf.bullets {
@@ -264,6 +309,19 @@ pub fn emit_makefile(
 }
 
 // ── Function emitters ─────────────────────────────────────────────────────────
+
+/// Emit a forward declaration (prototype) for a single function.
+fn emit_forward_decl_c(func: &Bullet) -> String {
+    if func.type_params.is_empty() {
+        let params = c_param_list(&func.params);
+        let ret    = bu_type_to_c(&func.output.ty);
+        format!("{} {}({});\n", ret, func.name, params)
+    } else {
+        let params = c_generic_param_list(&func.params, &func.type_params);
+        let ret    = c_generic_type(&func.output.ty, &func.type_params);
+        format!("{} {}({});\n", ret, func.name, params)
+    }
+}
 
 fn emit_function_c(func: &Bullet) -> String {
     let mut out = String::new();
@@ -358,9 +416,10 @@ fn emit_expr_c_generic(expr: &Expr, tp: &[String]) -> String {
             format!("{}({}, {})", fn_name, l, r)
         }
         Expr::Tuple(exprs) => {
-            // Tuples in generic context: emit as first element (no tuple type in C).
-            exprs.first().map(|e| emit_expr_c_generic(e, tp))
-                .unwrap_or_else(|| "bu_i64(0)".to_string())
+            let fields: Vec<String> = exprs.iter().enumerate()
+                .map(|(i, e)| format!(".v{} = {}", i, emit_expr_c_generic(e, tp)))
+                .collect();
+            format!("({{{}}})", fields.join(", "))
         }
     }
 }
@@ -475,9 +534,11 @@ pub fn emit_expr_c(expr: &Expr) -> String {
         Expr::Atom(a)      => emit_atom_c(a),
         Expr::BinOp(b)     => format!("{} {} {}", emit_atom_c(&b.lhs), b.op, emit_atom_c(&b.rhs)),
         Expr::Tuple(exprs) => {
-            // C has no tuple type — emit as a struct initialiser comment
-            format!("/* tuple: {} */",
-                exprs.iter().map(emit_expr_c).collect::<Vec<_>>().join(", "))
+            // Emit as a compound literal: (Tuple_T_U){ .v0 = x, .v1 = y }
+            let fields: Vec<String> = exprs.iter().enumerate()
+                .map(|(i, e)| format!(".v{} = {}", i, emit_expr_c(e)))
+                .collect();
+            format!("({{{}}})", fields.join(", "))
         }
     }
 }
@@ -602,12 +663,55 @@ fn interp_to_printf(template: &str) -> (String, Vec<&str>) {
     (fmt_str, vars)
 }
 
+// ── Tuple struct support ──────────────────────────────────────────────────────
+
+/// `Tuple[i32, f64]` → `Tuple_i32_f64`
+pub fn tuple_c_name(inner: &[BuType]) -> String {
+    let parts: Vec<String> = inner.iter()
+        .map(|t| bu_type_to_c(t).replace(['*', ' ', '[', ']'], "_").trim_matches('_').to_string())
+        .collect();
+    format!("Tuple_{}", parts.join("_"))
+}
+
+/// Emit a `typedef struct` for a tuple combination, e.g.:
+/// ```c
+/// typedef struct { int32_t v0; double v1; } Tuple_i32_f64;
+/// ```
+pub fn emit_tuple_struct_c(inner: &[BuType]) -> String {
+    let name   = tuple_c_name(inner);
+    let fields: String = inner.iter().enumerate()
+        .map(|(i, t)| format!("    {} v{};\n", bu_type_to_c(t), i))
+        .collect();
+    format!("typedef struct {{\n{}}} {};\n", fields, name)
+}
+
+/// Collect all unique Tuple type combinations used in a set of source files.
+pub fn collect_tuple_types_c(source_files: &[(String, &SourceFile)]) -> Vec<Vec<BuType>> {
+    let mut seen: Vec<Vec<BuType>> = Vec::new();
+
+    fn scan(ty: &BuType, seen: &mut Vec<Vec<BuType>>) {
+        if let BuType::Tuple(inner) = ty {
+            if !seen.contains(inner) {
+                seen.push(inner.clone());
+            }
+        }
+    }
+
+    for (_, sf) in source_files {
+        for func in &sf.bullets {
+            scan(&func.output.ty, &mut seen);
+            for p in &func.params { scan(&p.ty, &mut seen); }
+        }
+    }
+    seen
+}
+
 // ── Type mapping: Bullang → C ─────────────────────────────────────────────────
 
 pub fn bu_type_to_c(ty: &BuType) -> String {
     match ty {
         BuType::Named(s)     => rust_type_to_c(s),
-        BuType::Tuple(_)     => "void*  /* tuple — use a struct */".to_string(),
+        BuType::Tuple(ts)    => tuple_c_name(ts),
         BuType::Array(t, n)  => format!("{}[{}]", bu_type_to_c(t), n),
         BuType::Unknown      => "void*".to_string(),
     }

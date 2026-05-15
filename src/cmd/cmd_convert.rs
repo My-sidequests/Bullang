@@ -243,31 +243,17 @@ pub fn cmd_convert_file(input: PathBuf, ext: String, output: Option<PathBuf>) {
                     write_file_or_exit(&out, content);
                 }
                 Backend::C => {
-                    let hdr_name = format!("{}.h", stem);
-                    let hdr_out  = out_dir.join(&hdr_name);
-                    let src_out  = derive_output("c");
-                    let content  = codegen::emit_source_c(sf, &hdr_name);
-                    // For C, also write the header alongside if no explicit -o
-                    if output.is_none() {
-                        let (hdr_content, src_content) = split_c_output(&content, &hdr_name);
-                        write_file_or_exit(&hdr_out, hdr_content);
-                        write_file_or_exit(&src_out, src_content);
-                    } else {
-                        write_file_or_exit(&src_out, content);
-                    }
+                    // Single-file mode: no header emitted. Declarations are
+                    // written inline at the top of the .c file so the output
+                    // is self-contained and no .h is created next to it.
+                    let out     = derive_output("c");
+                    let content = codegen::emit_source_c_standalone(sf);
+                    write_file_or_exit(&out, content);
                 }
                 Backend::Cpp => {
-                    let hdr_name = format!("{}.hpp", stem);
-                    let hdr_out  = out_dir.join(&hdr_name);
-                    let src_out  = derive_output("cpp");
-                    let content  = codegen::emit_source_cpp(sf, &hdr_name);
-                    if output.is_none() {
-                        let (hdr_content, src_content) = split_c_output(&content, &hdr_name);
-                        write_file_or_exit(&hdr_out, hdr_content);
-                        write_file_or_exit(&src_out, src_content);
-                    } else {
-                        write_file_or_exit(&src_out, content);
-                    }
+                    let out     = derive_output("cpp");
+                    let content = codegen::emit_source_cpp_standalone(sf);
+                    write_file_or_exit(&out, content);
                 }
                 Backend::Go => {
                     let out = derive_output("go");

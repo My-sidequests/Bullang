@@ -25,6 +25,65 @@ pub fn emit_source_cpp(file: &SourceFile, header_name: &str) -> String {
     out
 }
 
+/// Single-file mode: emit a self-contained `.cpp` with no companion `.hpp`.
+pub fn emit_source_cpp_standalone(file: &SourceFile) -> String {
+    let mut out = String::new();
+    out.push_str("#include <cstdint>\n");
+    out.push_str("#include <string>\n");
+    if needs_stdbool_cpp(file) {
+        out.push_str("#include <stdbool.h>\n");
+    }
+    if needs_vector_cpp(file) {
+        out.push_str("#include <vector>\n");
+    }
+    if needs_map_cpp(file) {
+        out.push_str("#include <unordered_map>\n");
+    }
+    if needs_optional_cpp(file) {
+        out.push_str("#include <optional>\n");
+    }
+    if needs_tuple_cpp(file) {
+        out.push_str("#include <tuple>\n");
+    }
+    out.push('\n');
+
+    for func in &file.bullets {
+        out.push_str(&emit_function_cpp(func));
+        out.push('\n');
+    }
+    out
+}
+
+// ── Detection helpers for standalone mode ─────────────────────────────────────
+
+fn type_contains<F: Fn(&str) -> bool>(ty: &BuType, pred: &F) -> bool {
+    match ty {
+        BuType::Named(s)    => pred(s),
+        BuType::Array(t, _) => type_contains(t, pred),
+        BuType::Tuple(ts)   => ts.iter().any(|t| type_contains(t, pred)),
+        BuType::Unknown     => false,
+    }
+}
+
+fn file_any_type<F: Fn(&str) -> bool>(file: &SourceFile, pred: F) -> bool {
+    file.bullets.iter().any(|b| {
+        type_contains(&b.output.ty, &pred)
+            || b.params.iter().any(|p| type_contains(&p.ty, &pred))
+    })
+}
+
+fn needs_stdbool_cpp(file: &SourceFile) -> bool { file_any_type(file, |s| s == "bool") }
+fn needs_vector_cpp(file: &SourceFile)   -> bool { file_any_type(file, |s| s.starts_with("Vec[")) }
+fn needs_map_cpp(file: &SourceFile)      -> bool { file_any_type(file, |s| s.starts_with("HashMap[")) }
+fn needs_optional_cpp(file: &SourceFile) -> bool { file_any_type(file, |s| s.starts_with("Option[")) }
+
+fn needs_tuple_cpp(file: &SourceFile) -> bool {
+    file.bullets.iter().any(|b| {
+        matches!(b.output.ty, BuType::Tuple(_))
+            || b.params.iter().any(|p| matches!(p.ty, BuType::Tuple(_)))
+    })
+}
+
 // ── Struct emitter ────────────────────────────────────────────────────────────
 
 pub fn emit_struct_cpp(s: &crate::ast::StructDef) -> String {

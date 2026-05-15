@@ -119,7 +119,7 @@ Rules:
 | `Vec[T]`        | `Vec<T>`       | `list`          | `[]T`           | `vec_t` (1)     | `std::vector<T>`          |
 | `HashMap[K, V]` | `HashMap<K,V>` | `dict`          | `map[K]V`       | `map_t` (1)     | `std::unordered_map<K,V>` |
 | `Option[T]`     | `Option<T>`    | `Optional[T]`   | `*T`            | `T*`            | `std::optional<T>`        |
-| `Tuple[T, U]`   | `(T, U)`       | `tuple`         | `Tuple_T_U` (2) | N/A             | `std::tuple<T, U>`        |
+| `Tuple[T, U]`   | `(T, U)`       | `tuple`         | `Tuple_T_U` (2) | `Tuple_T_U` (3) | `std::tuple<T, U>`        |
 | `UserStruct`    | `pub struct`   | `@dataclass`    | `struct`        | `typedef struct`| `struct`                  |
 
 (1) C projects using `Vec[T]` or `HashMap[K,V]` get a `foreign_types.h`
@@ -128,6 +128,11 @@ emitted automatically. `map_t` uses string keys only.
 (2) Go has no built-in tuple type. Bullang emits a named struct per unique
 tuple combination into `types.go` — e.g. `Tuple[i32, f64]` becomes
 `Tuple_i32_f64` with fields `V0 int32` and `V1 float64`.
+
+(3) C has no built-in tuple type. Bullang emits a `typedef struct` per unique
+tuple combination into the module header — e.g. `Tuple[i32, f64]` becomes
+`typedef struct { int32_t v0; double v1; } Tuple_i32_f64;`. In single-file
+mode the typedef is written inline at the top of the `.c` file.
 
 ---
 
@@ -263,6 +268,85 @@ functions. Escape block contents are never reformatted.
 
 ---
 
+
+## Blueprint example
+
+A blueprint lets you scaffold an entire project structure from a single `.bu` file.
+Depth-3 example with all features — owner, goal, and language prefix:
+
+```
+// game_engine blueprint
+
+war game_engine {
+
+    theater core {
+
+        battle math {
+            strategy linear_algebra {
+                tactic vectors {
+                    skirmish ops {
+                        vec3.bu : cross, dot, normalize, length {
+                            goal  : "Core 3D vector arithmetic used everywhere in the engine"
+                            owner : "alice"
+                        }
+                        vec4.bu : scale, lerp;
+                    }
+                }
+            }
+        }
+
+        battle memory {
+            strategy allocators {
+                tactic pool {
+                    skirmish slab {
+                        slab_alloc.bu : alloc, free, reset {
+                            goal  : "Fixed-size slab allocator for hot-path objects"
+                            owner : "bob"
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+
+    python: theater tools {
+
+        battle asset_pipeline {
+            strategy import {
+                tactic mesh {
+                    skirmish gltf {
+                        gltf_loader.bu : load_scene, load_mesh {
+                            goal  : "Imports glTF 2.0 scenes into the engine asset format"
+                            owner : "alice"
+                        }
+                        gltf_validate.bu : check_indices, check_uvs;
+                    }
+                }
+            }
+        }
+
+    }
+
+}
+```
+
+Run with:
+
+```sh
+bullang init game_engine --blueprint game_engine.bu
+```
+
+What gets generated:
+- Full folder tree with `inventory.bu` at every level (ranks inferred from depth)
+- A stub `.bu` file for every declared file — goal written as a comment at the top if specified
+- `blueprint.bu` copied to the root as a topology reference
+- `work_division.md` at the root (only when at least one owner is declared), listing each owner's files
+
+Rank keywords (`war`, `theater`, `battle`, …) are optional in the blueprint — you can write them for readability or omit them entirely.
+
+---
+
 ## CLI reference
 
 | Command                                     | What it does                                             |
@@ -284,7 +368,6 @@ functions. Escape block contents are never reformatted.
 | `bullang update --experimental`             | Pull and reinstall from experimental branch              |
 | `bullang lsp`                               | Start the LSP server                                     |
 | `bullang editor-setup`                      | Write LSP config for Neovim / Helix / Emacs              |
-| `bullang install`                           | Install bullang to system PATH                           |
 
 ---
 

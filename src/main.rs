@@ -20,7 +20,6 @@ use std::path::PathBuf;
     name    = "bullang",
     version = env!("CARGO_PKG_VERSION"),
     about   = "Bullang (.bu) transpiler\n\n\
-               Install once with `bullang install`, then run from anywhere.\n\
                The source tree is never modified — all output is external."
 )]
 struct Cli {
@@ -30,9 +29,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install bullang to your system PATH.
-    Install,
-
     /// Scaffold a new Bullang project.
     ///
     /// Examples:
@@ -169,7 +165,6 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Install                                               => cmd::cmd_install(),
         Command::Init { name, depth, blueprint, lang, libs, path }    => cmd::cmd_init(name, depth, blueprint, lang, libs, path),
         Command::Convert { folder, name, ext, out, output }  => cmd::cmd_convert(folder, name, ext, out, output),
         Command::Fmt { folder, dry_run }                       => cmd::cmd_fmt(folder, dry_run),
