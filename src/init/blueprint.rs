@@ -15,18 +15,6 @@ pub const BULLANG_README: &str = r#"# Bullang — Quick-start README
 
 ---
 
-## What is Bullang?
-
-Bullang (`.bu`) is a structured transpiler language. You write plain, typed
-source files in a military-themed folder hierarchy, and `bullang convert`
-produces clean, compilable code in your target language (Rust, Python, C, C++,
-or Go).
-
-Two core principles: **hierarchy first, then code** — and **invisible tooling**,
-meaning the generated output has no trace of Bullang in it.
-
----
-
 ## Folder hierarchy
 
 | Rank       | Depth | Role                              |
@@ -63,7 +51,7 @@ struct Vec2 {
 math : add_vec, dot_product;
 ```
 
-### Directives
+### Directives, to put on top of the inventory.bu file
 
 | Directive | Meaning                                     |
 |-----------|---------------------------------------------|
@@ -74,45 +62,21 @@ math : add_vec, dot_product;
 `#lang:` set on a parent folder propagates to all descendants. A child
 declaring a different `#lang:` than its parent is a validation error.
 
-### Struct definitions
+### Struct definitions and source files
 
-Structs are declared in `inventory.bu` only — never in source files. This
-ensures they are emitted into the header or declaration layer of the output
-(`.h`, `.hpp`, `lib.rs`, `__init__.py`, `types.go`), not into implementation
-files.
+Structs are declared in `inventory.bu`.
 
 The rank rule applies to structs too: a struct from a child inventory can be
 used in that child's source files and in the parent's inventory and source
 files. Never from a sibling or ancestor.
 
-```
-// tactic/inventory.bu
-#rank: tactic;
-
-struct Transform {
-    position : Vec2,   // Vec2 declared in the child skirmish -- valid
-    scale    : f32,
-}
-
-physics : apply_transform;
-```
-
-### Source file entries
-
-After directives and structs, list every source file and its functions:
-
-```
-filename : fn1, fn2, fn3;
-```
-
-The validator cross-checks both directions: missing entries and undeclared
-functions are both errors.
+After directives and structs, list every source file and its functions.
 
 ---
 
 ## Source files
 
-Source files contain **only function declarations**.
+Functions in source files are writen as followed :
 
 ```
 let add(a: i32, b: i32) -> result: i32 {
@@ -125,9 +89,9 @@ let scale_and_add(x: i32, y: i32, factor: i32) -> result: i32 {
 }
 ```
 
-Pipe syntax: `(inputs) : expression -> {binding};`
+Bullet syntax: `(inputs) : expression -> {binding};`
 
-The input list may be empty when the expression uses only literals or
+The arguments list, nammed the shell, may be empty when the expression uses only literals or
 interpolation:
 
 ```
@@ -229,23 +193,6 @@ let sum_slice(values: Vec[i32]) -> result: i32 {
 ```
 
 Supported: `@rust`  `@python`  `@c`  `@cpp`  `@go`
-
-A single function can carry one block per backend. Each conversion picks only
-the matching block:
-
-```
-let native_greet(name: String) -> result: String {
-    @rust
-    format!("Hello, {}!", name)
-    @end
-    @python
-    result = f"Hello, {name}!"
-    @end
-    @go
-    return "Hello, " + name + "!"
-    @end
-}
-```
 
 **Restriction:** every native block must match the folder's `#lang:`. A
 `@python` block in a `#lang: rs` folder is a validation error. `@c` is
