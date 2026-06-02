@@ -360,12 +360,9 @@ fn parse_bullet_body(pair: Pair<Rule>) -> BulletBody {
 
     match children[0].as_rule() {
         Rule::native_block => {
-            // Collect ALL native blocks — a function may have one per backend
-            let blocks: Vec<NativeBlock> = children.iter()
-                .filter(|c| c.as_rule() == Rule::native_block)
-                .map(|c| parse_native_block(c.as_str()))
-                .collect();
-            BulletBody::Natives(blocks)
+            // Grammar enforces exactly one native block per function.
+            let block = parse_native_block(children[0].as_str());
+            BulletBody::Natives(vec![block])
         }
         Rule::builtin_call => {
             let name = children[0].clone().into_inner()

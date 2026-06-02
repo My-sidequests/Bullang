@@ -93,7 +93,7 @@ native_block = @{ "@" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ (!"@end" ~ A
 builtin_call = { "builtin" ~ "::" ~ ident }
 
 // ── Bullet body: pure pipes, one native block, or a builtin reference ─────────
-bullet_body = { builtin_call | native_block+ | pipe+ }
+bullet_body = { builtin_call | native_block | pipe+ }
 
 // ── Function signature ────────────────────────────────────────────────────────
 param       = { ident ~ ":" ~ ty }
