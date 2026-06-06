@@ -43,7 +43,7 @@ fn main() {
             let remote = cmd::remote_head(cmd::DEFAULT_REPO, "main")?;
             let installed = cmd::installed_hash("bullang", cmd::DEFAULT_REPO, "main")?;
             if installed == remote {
-                None // Pas de message si déjà à jour
+                None
             } else {
                 Some(format!(
                     "\nA new version of bullang is available. Run `bullang update` to install."
