@@ -1,10 +1,13 @@
 # Bullang
 
-Bullang defines the `.bu` language: grammar, parser, AST, type system, and standard library.
+Bullang is a functionnal interpreted programming language, meant to simplify writing secure code.
+It's main attributes is that it can be transpiled into multiple target languages.
 
-It is the foundation of the Bullang ecosystem. Bullarch and Bullscript depend on it as a library crate — but Bullang itself has no dependency on either. It can be installed and used alone.
+The Bullang language is the foundation of the Bullang ecosystem. 
+Bullarchy and Bullscript depend on it, but Bullang itself has no dependency on either. 
+It can be installed and used alone, also we advise using those tools to enhance your workflow.
 
-To learn the language, go to https://github.com/My-sidequests/Bullang-Book
+To learn the language and tools, go to https://github.com/My-sidequests/Bullang-Book
 
 ---
 
@@ -32,7 +35,7 @@ cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang
 cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang \
   && cargo install --git https://github.com/My-sidequests/Bullarchy.git --force bullarchy \
   && cargo install --git https://github.com/My-sidequests/Bullscript.git --force bullscript \
-  && cargo install --git https://github.com/My-sidequests/Bullarchy-gui.git
+  && cargo install --git https://github.com/My-sidequests/Bullarchy-gui.git --force bullarchy-gui
 ```
 
 ### Update
@@ -40,14 +43,6 @@ cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang
 ```bash
 bullang update
 ```
-
-Already installed and want to force a reinstall regardless of version:
-
-```bash
-cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang
-```
-
----
 
 ## What Bullang provides
 
@@ -60,22 +55,11 @@ bullang update   # update to the latest version
 
 ### The interpreter
 
-Bullang source files can be executed directly — no transpilation needed. The interpreter is exposed through `bullang::interpreter` and used by Bullscript's `run` command. See [Bullscript](https://github.com/My-sidequests/Bullscript) for the user-facing command.
+Bullang source files can be executed directly using Bullscript. See [Bullscript](https://github.com/My-sidequests/Bullscript) for the user-facing command.
 
 The full standard library is supported, including file I/O (`open`, `close`, `in`, `out`), sorting algorithms, environment variables, and all math and string builtins.
 
 Any bullet whose body is a native escape block (`@rust { ... }`, `@c { ... }`, etc.) cannot be interpreted — use `bullarchy convert` for those. The `bullang::checker` module validates this before execution.
-
-### The `bullang` library crate
-
-Bullarchy and Bullscript depend on this crate directly. It exports:
-
-- `bullang::ast` — the full AST type hierarchy
-- `bullang::parser` — `parse_file`, `parse_source`, `ParseError`
-- `bullang::fmt` — `format_source`, `format_inventory`
-- `bullang::stdlib` — `list_builtins`, builtin metadata
-- `bullang::interpreter` — `run(&SourceFile)`, `Value`, `InterpError`
-- `bullang::checker` — `check_no_escape(&SourceFile)`, `EscapeViolation`
 
 ---
 
@@ -125,6 +109,7 @@ Run `bullang stdlib` for the full catalogue with signatures and descriptions.
 ## Project structure
 
 Every folder holds an `inventory.bu` — its rank declaration, optional language and library directives, struct and enum definitions, and the list of source files with their functions.
+This is enforced throught Bullarchy when transpilling Bullang into a target language. That strict rank system allows for both abstraction and clarity.
 
 Folders nest from `war` down to `skirmish`. Functions and structs defined at a lower rank are available one rank above. Build below to use above.
 
