@@ -29,7 +29,8 @@ cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang
 ```bash
 cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang \
   && cargo install --git https://github.com/My-sidequests/Bullarchy.git --force bullarchy \
-  && cargo install --git https://github.com/My-sidequests/Bullscript.git --force bullscript
+  && cargo install --git https://github.com/My-sidequests/Bullscript.git --force bullscript \
+  && cargo install --git https://github.com/My-sidequests/Bullarchy-gui.git
 ```
 
 ### Update
