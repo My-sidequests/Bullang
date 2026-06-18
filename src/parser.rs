@@ -391,6 +391,7 @@ fn parse_native_block(raw: &str) -> NativeBlock {
         "c"      => Backend::C,
         "cpp"    => Backend::Cpp,
         "go"     => Backend::Go,
+        "java"   => Backend::Java,
         other    => Backend::Unknown(other.to_string()),
     };
     NativeBlock { backend, code }
