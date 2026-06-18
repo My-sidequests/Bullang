@@ -4,6 +4,8 @@ Bullang defines the `.bu` language: grammar, parser, AST, type system, and stand
 
 It is the foundation of the Bullang ecosystem. Bullarch and Bullscript depend on it as a library crate — but Bullang itself has no dependency on either. It can be installed and used alone.
 
+To learn the language, go to https://github.com/My-sidequests/Bullang-Book
+
 ---
 
 ## Prerequisite
