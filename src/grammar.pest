@@ -121,7 +121,7 @@ source_file = { SOI ~ bullet* ~ EOI }
 // ── Inventory file ────────────────────────────────────────────────────────────
 rank_val       = { "war" | "theater" | "battle" | "strategy" | "tactic" | "skirmish" }
 dir_rank       = { "#rank" ~ ":" ~ rank_val ~ ";" }
-lang_val       = { "rs" | "py" | "c" | "cpp" | "go" }
+lang_val       = { "rs" | "py" | "c" | "cpp" | "go" | "java" }
 dir_lang       = { "#lang" ~ ":" ~ lang_val ~ ";" }
 lib_name       = @{ (!(";" | NEWLINE) ~ ANY)+ }
 dir_lib        = { "#lib" ~ ":" ~ lib_name ~ ";" }
