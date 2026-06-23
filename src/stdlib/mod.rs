@@ -45,6 +45,7 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("exit",           "exit(code: i64)",                            "exit with code"),
     ("env",            "env(key: String) -> String",                 "read environment variable"),
     ("sleep",          "sleep(ms: i64)",                             "sleep for ms milliseconds"),
+    ("run",            "run(cmd: String) -> i32",                    "run a shell command, returns exit code"),
 ];
 
 /// Return the full builtin catalogue.
