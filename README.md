@@ -7,7 +7,7 @@ The Bullang language is the foundation of the Bullang ecosystem.
 Bullarchy and Bullscript depend on it, but Bullang itself has no dependency on either. 
 It can be installed and used alone, also we advise using those tools to enhance your workflow.
 
-To learn the language and tools, go to https://github.com/My-sidequests/Bullang-Book
+To learn the language and tools, go to https://github.com/The-Bullang-Foundation/Bullang-Book
 
 ---
 
@@ -20,22 +20,22 @@ Cargo v1.92.0 or later.
 ### Language registry only
 
 ```bash
-cargo install --git https://github.com/My-sidequests/Bullang.git
+cargo install --git https://github.com/The-Bullang-Foundation/Bullang.git
 ```
 
 If you are reinstalling over an existing version, add `--force`:
 
 ```bash
-cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang
+cargo install --git https://github.com/The-Bullang-Foundation/Bullang.git --force bullang
 ```
 
 ### Full suite
 
 ```bash
-cargo install --git https://github.com/My-sidequests/Bullang.git --force bullang \
-  && cargo install --git https://github.com/My-sidequests/Bullarchy.git --force bullarchy \
-  && cargo install --git https://github.com/My-sidequests/Bullscript.git --force bullscript \
-  && cargo install --git https://github.com/My-sidequests/Bullarchy-gui.git --force bullarchy-gui
+cargo install --git https://github.com/The-Bullang-Foundation/Bullang.git --force bullang \
+  && cargo install --git https://github.com/The-Bullang-Foundation/Bullarchy.git --force bullarchy \
+  && cargo install --git https://github.com/The-Bullang-Foundation/Bullscript.git --force bullscript \
+  && cargo install --git https://github.com/The-Bullang-Foundation/Bullarchy-gui.git --force bullarchy-gui
 ```
 
 ### Update
@@ -55,7 +55,7 @@ bullang update   # update to the latest version
 
 ### The interpreter
 
-Bullang source files can be executed directly using Bullscript. See [Bullscript](https://github.com/My-sidequests/Bullscript) for the user-facing command.
+Bullang source files can be executed directly using Bullscript. See [Bullscript](https://github.com/The-Bullang-Foundation/Bullscript) for the user-facing command.
 
 The full standard library is supported, including file I/O (`open`, `close`, `in`, `out`), sorting algorithms, environment variables, and all math and string builtins.
 
@@ -128,4 +128,4 @@ war
 
 VS Code: install the extension through the VS Code extension page.
 
-For LSP support and editor configuration (Neovim, Helix, Emacs), use [Bullarchy](https://github.com/My-sidequests/Bullarchy) and run `editor-setup`.
+For LSP support and editor configuration (Neovim, Helix, Emacs), use [Bullarchy](https://github.com/The-Bullang-Foundation/Bullarchy) and run `editor-setup`.
